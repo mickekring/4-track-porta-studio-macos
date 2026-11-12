@@ -1,4 +1,5 @@
 #if DEBUG
+import AppKit
 import Foundation
 
 /// A debug-only walkthrough that works the real machine the way a person
@@ -9,9 +10,20 @@ import Foundation
 enum SelfTest {
     static var isRequested: Bool { CommandLine.arguments.contains("--self-test") }
 
+    /// Prints, and also appends to `self-test.log` in the app's temporary
+    /// folder for runs started through LaunchServices, which have no stdout.
     private static func say(_ message: String) {
-        print("[self-test] \(message)")
+        let line = "[self-test] \(message)"
+        print(line)
         fflush(stdout)
+        let url = FileManager.default.temporaryDirectory.appending(path: "self-test.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data((line + "\n").utf8))
+            try? handle.close()
+        } else {
+            try? Data((line + "\n").utf8).write(to: url)
+        }
     }
 
     private static func wait(_ seconds: Double) async {
@@ -37,6 +49,167 @@ enum SelfTest {
             "\(report.motion)", machine.counterValue(at: report.position),
             (report.position - (machine.loaded?.stock.leaderLength ?? 0) * CassetteStandard.framesPerMeter) / CassetteStandard.sampleRate,
             meters, lamps, report.isRecording ? "yes" : "no")
+    }
+
+    // MARK: - Ghost finger
+
+    /// Delivers mouse events straight to the app's own window, so the
+    /// gestures can be exercised without touching the real pointer.
+    @MainActor
+    private struct GhostFinger {
+        let window: NSWindow
+        private static var eventNumber = 0
+
+        /// Converts a point in scene millimetres to window coordinates,
+        /// the same way the desk view lays the scene out when sitting back.
+        func windowPoint(_ scene: CGPoint) -> CGPoint {
+            let size = window.contentView?.bounds.size ?? window.frame.size
+            let unit = min(size.width / Desk.scene.width, size.height / Desk.scene.height)
+            let x = size.width / 2 + (scene.x - Desk.scene.width / 2) * unit
+            let y = size.height / 2 + (scene.y - Desk.scene.height / 2) * unit
+            return CGPoint(x: x, y: size.height - y)
+        }
+
+        private func send(_ type: NSEvent.EventType, at scene: CGPoint, clicks: Int = 1) {
+            Self.eventNumber += 1
+            guard let event = NSEvent.mouseEvent(
+                with: type, location: windowPoint(scene), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: Self.eventNumber, clickCount: clicks, pressure: type == .leftMouseUp ? 0 : 1)
+            else { return }
+            window.sendEvent(event)
+        }
+
+        func click(_ scene: CGPoint, hold: Double = 0.12) async {
+            send(.leftMouseDown, at: scene)
+            try? await Task.sleep(for: .seconds(hold))
+            send(.leftMouseUp, at: scene)
+            try? await Task.sleep(for: .seconds(0.15))
+        }
+
+        func drag(from start: CGPoint, to end: CGPoint) async {
+            send(.leftMouseDown, at: start)
+            for step in 1...14 {
+                try? await Task.sleep(for: .milliseconds(16))
+                send(.leftMouseDragged, at: Ease.mix(start, end, Double(step) / 14))
+            }
+            try? await Task.sleep(for: .milliseconds(30))
+            send(.leftMouseUp, at: end)
+            try? await Task.sleep(for: .seconds(0.15))
+        }
+    }
+
+    static var isTouchRequested: Bool { CommandLine.arguments.contains("--touch-test") }
+
+    /// Works the controls with synthetic mouse events and checks the machine felt it.
+    static func runTouch(machine: Machine, desk: Desk) async {
+        await wait(1.5)
+        guard let window = NSApplication.shared.windows.first(where: { $0.identifier?.rawValue.contains("desk") == true })
+            ?? NSApplication.shared.windows.first(where: { $0.isVisible })
+        else { return say("FAIL: no window") }
+        // Mouse-downs are only delivered to views in the key window of the
+        // active app; anything else is taken as the click that activates it.
+        NSApplication.shared.activate()
+        window.makeKeyAndOrderFront(nil)
+        await wait(0.6)
+        say("window key=\(window.isKeyWindow) active=\(NSApplication.shared.isActive) size=\(window.contentView?.bounds.size ?? .zero)")
+        machine.mechanicalLevel = 0
+        machine.panel = .readyToPlay
+        if machine.loaded != nil {
+            desk.eject()
+            await idle(desk)
+        }
+        let finger = GhostFinger(window: window)
+        let origin = Desk.machineOrigin
+        func onMachine(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: origin.x + x, y: origin.y + y) }
+        var failures = 0
+        func check(_ name: String, _ passed: Bool, _ detail: String = "") {
+            if !passed { failures += 1 }
+            say("\(passed ? "ok  " : "FAIL") \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+        }
+
+        // Transport keys.
+        let keyY = Layout.keyTop + Layout.keySize.height / 2
+        await finger.click(onMachine(Layout.keyX[TransportKey.play.rawValue], keyY))
+        check("click PLAY latches it", machine.keysDown == [.play], "\(machine.keysDown)")
+        await finger.click(onMachine(Layout.keyX[TransportKey.stop.rawValue], keyY))
+        check("click STOP releases it", machine.keysDown.isEmpty && machine.keyHeld == nil)
+
+        // A fader: drag the cap 15 mm down, then 10 mm back up.
+        let before = machine.panel.fader1
+        let capY = Layout.faderBottom - CGFloat(before) * Layout.faderTravel
+        await finger.drag(from: onMachine(Layout.channelX[0], capY), to: onMachine(Layout.channelX[0], capY + 15))
+        let down = before - machine.panel.fader1
+        check("drag INPUT fader 1 down 15 mm", abs(down - 15 / Double(Layout.faderTravel)) < 0.02, String(format: "moved %.3f of its travel", down))
+        await finger.drag(from: onMachine(Layout.channelX[0], capY + 15), to: onMachine(Layout.channelX[0], capY + 5))
+        let up = machine.panel.fader1 - (before - down)
+        check("drag it 10 mm back up", abs(up - 10 / Double(Layout.faderTravel)) < 0.02, String(format: "moved %.3f of its travel", up))
+        // Click in the slot above the cap: the cap comes to the finger.
+        await finger.click(onMachine(Layout.masterX, Layout.faderTop + 2))
+        check("click the MASTER slot near the top", machine.panel.master > 0.9, String(format: "%.2f", machine.panel.master))
+
+        // A knob: drag upwards to turn clockwise.
+        let pan = machine.panel.pan1
+        await finger.drag(from: onMachine(Layout.channelX[0], Layout.panY), to: onMachine(Layout.channelX[0], Layout.panY - 20))
+        check("drag PAN 1 upwards turns it clockwise", machine.panel.pan1 > pan + 0.05, String(format: "%.2f → %.2f", pan, machine.panel.pan1))
+
+        // A centre-zero knob: drag downwards from centre towards INPUT.
+        let gain = machine.panel.subGain[1]
+        await finger.drag(from: onMachine(Layout.channelX[3], Layout.gainY), to: onMachine(Layout.channelX[3], Layout.gainY + 24))
+        check("drag SUB GAIN 4 downwards turns it anticlockwise", machine.panel.subGain[1] < gain - 0.05, String(format: "%.2f → %.2f", gain, machine.panel.subGain[1]))
+
+        // Slide switches.
+        let noise = machine.panel.noiseReduction
+        await finger.click(onMachine(Layout.switchX, Layout.noiseReductionY + 4))
+        check("click the NR switch flips it", machine.panel.noiseReduction != noise)
+        await finger.click(onMachine(Layout.switchX, Layout.recordLY - 7))
+        check("click above REC TRK L arms track 1", machine.panel.recordL == .upper, "\(machine.panel.recordL)")
+        await finger.drag(from: onMachine(Layout.switchX, Layout.recordLY - 4), to: onMachine(Layout.switchX, Layout.recordLY + 6))
+        check("drag REC TRK L down to 3", machine.panel.recordL == .lower, "\(machine.panel.recordL)")
+        let mixer = machine.panel.metersShowMixer
+        await finger.click(onMachine(Layout.meterSwitch.x, Layout.meterSwitch.y))
+        check("click TAPE/MIXER flips it", machine.panel.metersShowMixer != mixer)
+        let mic = machine.panel.micGain1
+        await finger.click(onMachine(Layout.channelX[0] + 1.6, Layout.gainY))
+        check("click MIC/LINE 1 flips it", machine.panel.micGain1 != mic)
+
+        // Counter reset.
+        await finger.click(onMachine(Layout.counterReset.x, Layout.counterReset.y))
+        check("click counter reset", abs(machine.counterValue(at: machine.telemetry.position)) < 0.01)
+
+        // The lid.
+        let lid = onMachine(Layout.lid.midX, Layout.lid.midY)
+        await finger.click(lid)
+        await idle(desk)
+        check("click the lid opens it", machine.lidOpen)
+        await finger.click(onMachine(Layout.lid.midX, Layout.lid.minY + 5))
+        await idle(desk)
+        check("click the raised lid closes it", !machine.lidOpen)
+
+        // A cassette on the desk: one click and the hand puts it in.
+        if let cassette = desk.cassettesOnDesk.last {
+            let place = desk.spot(for: cassette)
+            await finger.click(CGPoint(x: place.origin.x + 62, y: place.origin.y + 52))
+            await wait(0.6)
+            await idle(desk)
+            check("click a cassette on the desk loads it", machine.loaded?.id == cassette.id, machine.loaded?.title ?? "nothing loaded")
+            // And out again: open the lid, click the cassette.
+            await finger.click(lid)
+            await idle(desk)
+            await finger.click(onMachine(Layout.cassette.x + 50, Layout.cassette.y + 30))
+            await idle(desk)
+            check("click the cassette in the open well takes it out", machine.loaded == nil)
+            await finger.click(onMachine(Layout.lid.midX, Layout.lid.minY + 5))
+            await idle(desk)
+        }
+
+        // The foot switch and rhythm box are plain views too.
+        await finger.click(CGPoint(x: Accessories.rhythmBox.x + 48, y: Accessories.rhythmBox.y + 110))
+        check("click START on the rhythm box", machine.rhythm.running)
+        await finger.click(CGPoint(x: Accessories.rhythmBox.x + 48, y: Accessories.rhythmBox.y + 110))
+        check("click it again to stop", !machine.rhythm.running)
+
+        say(failures == 0 ? "PASS: every gesture reached the machine" : "\(failures) gesture check(s) failed")
     }
 
     // MARK: - Loopback

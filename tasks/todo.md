@@ -78,6 +78,12 @@ What was verified, and how:
   real time; auto-stop released the keys; the hand took the tape out.
 - **Real audio hardware loop** (`--loopback-test` through BlackHole): reported
   round trip 9.7 ms; the overdub landed 0.7 ms from the track it was played to.
+- **Gestures** (`--touch-test`): synthetic mouse events sent to the app's own
+  window click the transport keys, drag a fader by a measured distance, turn
+  knobs both ways, click and drag slide switches, reset the counter, open and
+  close the lid, click a cassette to have it loaded and click it again to
+  take it out. Menus (the jack patch menus, the blank-tape box) were not
+  exercised: they open a modal tracking loop.
 - **Looks**: every view checked by rendering previews and capturing the
   running app's window.
 
@@ -91,6 +97,11 @@ Bugs found on the way:
   recorded a second demo tape. Now detected from the environment.
 - An interrupted self-test left its panel settings saved as the user's.
   Self-tests, test hosts and previews now use a machine that never saves.
+- The LED meters and REC TRK lamps were drawn once and never again in the
+  running app (the Canvas captured nothing that changed). Caught by comparing
+  window captures with the telemetry log.
+- Bare-letter menu shortcuts would have swallowed typing in the label editor;
+  the desk view now handles transport keys itself while it has focus.
 
 Engine speed, worst case (two tracks recording, four playing, reverb on):
 3.6× real time in Debug, 16× in Release.

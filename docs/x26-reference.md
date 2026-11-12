@@ -128,6 +128,14 @@ X2026/X2026/
   `--self-test`. It inserts a scratch tape by hand, records the rhythm box,
   rewinds by counter, plays back, fast-forwards to the end and ejects,
   printing what it sees.
+- Mouse gestures (debug builds): `open -n X2026.app --args --touch-test`
+  delivers synthetic mouse events to the app's own window — keys, faders,
+  knobs, switches, lid, cassettes — and checks the machine felt each one. It
+  must be started through `open` so the app is active; results are appended
+  to `tmp/self-test.log` in the app's container.
+- Hardware round trip (debug builds, needs the BlackHole virtual device):
+  `--loopback-test` overdubs track 1 onto track 2 through the Mac's output
+  and input and reports how far apart they land.
 - Re-render the app icon: launch a debug build with `--render-icon <folder>`
   (inside the app's container) and copy the PNGs into `AppIcon.appiconset`.
 - Cassettes live in the app's container under `Application Support/Tapes`.

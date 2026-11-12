@@ -108,14 +108,38 @@ nonisolated enum AudioHardware {
         return value
     }
 
-    /// Looks a device up by (part of) its name. Used by the loopback self-test.
-    static func device(named needle: String) -> AudioDeviceID? {
+    /// A sound device as offered in Settings.
+    struct Device: Identifiable, Hashable, Sendable {
+        var id: AudioDeviceID
+        var name: String
+        /// Stays the same across restarts and re-plugging, unlike `id`.
+        var uid: String
+    }
+
+    private static func allDevices() -> [AudioDeviceID] {
         var where_ = address(kAudioHardwarePropertyDevices)
         var size: UInt32 = 0
         let system = AudioObjectID(kAudioObjectSystemObject)
-        guard AudioObjectGetPropertyDataSize(system, &where_, 0, nil, &size) == noErr else { return nil }
+        guard AudioObjectGetPropertyDataSize(system, &where_, 0, nil, &size) == noErr else { return [] }
         var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
-        guard AudioObjectGetPropertyData(system, &where_, 0, nil, &size, &devices) == noErr else { return nil }
-        return devices.first { name(of: $0).localizedCaseInsensitiveContains(needle) }
+        guard AudioObjectGetPropertyData(system, &where_, 0, nil, &size, &devices) == noErr else { return [] }
+        return devices
+    }
+
+    /// Every device that has inputs (or outputs).
+    static func devices(input: Bool) -> [Device] {
+        allDevices()
+            .filter { channelCount(of: $0, input: input) > 0 }
+            .map { Device(id: $0, name: name(of: $0), uid: string($0, kAudioDevicePropertyDeviceUID) ?? "") }
+            .filter { !$0.uid.isEmpty }
+    }
+
+    static func device(withUID uid: String, input: Bool) -> AudioDeviceID? {
+        devices(input: input).first { $0.uid == uid }?.id
+    }
+
+    /// Looks a device up by (part of) its name. Used by the loopback self-test.
+    static func device(named needle: String) -> AudioDeviceID? {
+        allDevices().first { name(of: $0).localizedCaseInsensitiveContains(needle) }
     }
 }

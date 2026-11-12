@@ -22,31 +22,75 @@ so this plan was written and then executed without stopping.
 - [x] Tape medium: sparse memory-mapped 4-track file, flippable
 - [x] DSP primitives: biquad, NR compander, tape channel (saturation, hiss, head response)
 - [x] Transport: capstan run-in, pitch, wow & flutter, hub-driven fast wind, auto-stop
-- [ ] Mixer + recorder core (block diagram), punch in/out with erase-head gap
-- [ ] Unit tests: wind time = 105 s, record/playback round trip, punch gap, counter
-- [ ] Audio host (AVAudioEngine), latency-compensated overdubs
-- [ ] Machine model: panel state, mechanical key interlock, persistence
+- [x] Mixer + recorder core (block diagram), punch in/out with erase-head gap
+- [x] Unit tests: wind time = 105 s, record/playback round trip, punch gap, counter
+- [x] Audio host (AVAudioEngine), latency-compensated overdubs
+- [x] Machine model: panel state, mechanical key interlock, persistence
 
 ## Phase 2 — the object
 
 - [x] Controls: knob, fader, slide switch, tape counter
 - [x] Cassette artwork with turning reels
-- [ ] Transport keys, LED meters, REC TRK lamps
-- [ ] Faceplate laid out from the manual drawing (380 × 195 mm)
-- [ ] Cassette well, smoked lid, spindles
-- [ ] The desk: cassettes lying around, new blank tapes, labels in handwriting
-- [ ] The hand: inserts and removes cassettes
-- [ ] Front-panel jacks: patch Mac inputs into INPUT 1–6
-- [ ] Mechanical sounds: keys, motor, wind whine, lid, cassette
+- [x] Transport keys, LED meters, REC TRK lamps
+- [x] Faceplate laid out from the manual drawing (380 × 195 mm)
+- [x] Cassette well, smoked lid, spindles, heads
+- [x] The desk: cassettes lying around, new blank tapes, labels in handwriting
+- [x] The hand: inserts and removes cassettes
+- [x] Front-panel jacks: patch Mac inputs into INPUT 1–6
+- [x] Mechanical sounds: keys, motor, wind whine, lid, cassette
 
 ## Phase 3 — the studio around it
 
-- [ ] Foot switch on PUNCH IN/OUT
-- [ ] Reverb unit on the AUX loop
-- [ ] Master recorder on LINE OUT (real-time mixdown to a file)
-- [ ] Rhythm box to plug into an input
-- [ ] App icon, About box, menus, keyboard shortcuts
+- [x] Foot switch on PUNCH IN/OUT
+- [x] Reverb unit on the AUX loop
+- [x] Master recorder on LINE OUT (real-time mixdown to a file)
+- [x] Rhythm box to plug into an input
+- [x] App icon, owner's manual, menus, keyboard shortcuts
+- [x] Demo cassette recorded by the machine itself on first run
+- [x] Lean in / sit back
+
+## Not done / ideas
+
+- [ ] Choose input and output devices in Settings (uses the system defaults today)
+- [ ] Wrong-tape behaviour: a Type I cassette on a Type II machine should sound dull
+- [ ] "Condition" setting: mint / well loved / barn find (flutter, hiss, motor bleed, dropouts)
+- [ ] Drop an audio file on an input jack as a line source that plays in real time
+- [ ] Tape wear and position-locked dropouts
+- [ ] Double-click a `.x2026tape` in Finder to put it on the desk
+- [ ] Nobody has *listened* to it yet. Every sound was verified by measurement, not by ear.
 
 ## Review
 
-(filled in at the end)
+What was verified, and how:
+
+- **Engine, offline** (27 unit tests): a C-60 winds end to end in 105.7 s both
+  ways and a C-90 takes longer; play speed and ±10 % pitch; auto-stop at both
+  ends at 48 kHz; record → play round trip keeps level (±2 dB) and pitch
+  (±0.4 %); RECORD with no track armed leaves the tape untouched; record-protect;
+  nothing records on the leader; lamp colours; input vs tape monitor; the
+  0.26 s punch-out gap and punch-in overlap; side B is the oxide reversed;
+  bounces and live overdubs land on the right spot with latency compensation;
+  NR encodes ≤10 dB and decodes transparently; hiss level and NR benefit;
+  saturation instead of clipping; counter wheels carry; key interlock.
+- **Real app, end to end** (`--self-test`): the hand inserts a cassette in
+  about 4 s; rhythm box recorded to track 1 (lamp amber → red); rewound by
+  counter; played back at +0.8 dB; a C-46 fast-forwarded to its end in 84 s of
+  real time; auto-stop released the keys; the hand took the tape out.
+- **Real audio hardware loop** (`--loopback-test` through BlackHole): reported
+  round trip 9.7 ms; the overdub landed 0.7 ms from the track it was played to.
+- **Looks**: every view checked by rendering previews and capturing the
+  running app's window.
+
+Bugs found on the way:
+
+- Auto-stop never tripped after a fast wind at 48 kHz (the stall timer was reset
+  every other sample). The unit test ran the deck at 8 kHz and missed it; the
+  live self-test caught it. Fixed, with a 48 kHz test.
+- The test host was detected with `NSClassFromString("XCTestCase")`, which is
+  still nil at app launch, so unit-test runs started the real machine and
+  recorded a second demo tape. Now detected from the environment.
+- An interrupted self-test left its panel settings saved as the user's.
+  Self-tests, test hosts and previews now use a machine that never saves.
+
+Engine speed, worst case (two tracks recording, four playing, reverb on):
+3.6× real time in Debug, 16× in Release.

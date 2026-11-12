@@ -187,6 +187,7 @@ struct SettingsView: View {
     @Bindable var machine: Machine
 
     var body: some View {
+        @Bindable var audio = machine.audio
         Form {
             Section("Sound of the mechanism") {
                 Slider(value: $machine.mechanicalLevel, in: 0...1) {
@@ -198,8 +199,18 @@ struct SettingsView: View {
                 }
             }
             Section("Audio hardware") {
-                LabeledContent("Output (PHONES)", value: machine.audio.outputDeviceName.isEmpty ? "—" : machine.audio.outputDeviceName)
-                LabeledContent("Input", value: machine.audio.inputDeviceName.isEmpty ? "—" : machine.audio.inputDeviceName)
+                Picker("PHONES go to", selection: $audio.outputUID) {
+                    Text("System default").tag(String?.none)
+                    ForEach(AudioHardware.devices(input: false)) { device in
+                        Text(device.name).tag(String?.some(device.uid))
+                    }
+                }
+                Picker("Input jacks take from", selection: $audio.inputUID) {
+                    Text("System default").tag(String?.none)
+                    ForEach(AudioHardware.devices(input: true)) { device in
+                        Text(device.name).tag(String?.some(device.uid))
+                    }
+                }
                 LabeledContent("Sample rate", value: "\(Int(machine.audio.sampleRate)) Hz")
                 LabeledContent(
                     "Round trip",

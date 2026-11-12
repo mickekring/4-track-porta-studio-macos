@@ -58,3 +58,10 @@ extension Desk {
 #Preview("Leaning in", traits: .fixedLayout(width: 1410, height: 850)) {
     DeskView(desk: .forPreview(leanedIn: true))
 }
+
+#Preview("Label editor") {
+    LabelEditor(cassette: Cassette(
+        title: "Summer demos '89",
+        trackNotes: ["Rhythm box", "Bass (DI)", "", ""],
+        stock: .c60, design: .krom, position: 4_000_000)) { _ in }
+}

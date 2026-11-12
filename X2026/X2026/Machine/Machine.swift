@@ -358,7 +358,12 @@ final class Machine {
         let reading = currentCounter
         cassette.position = core.eject()
         library.update(cassette)
-        medium = nil
+        // Letting go of the oxide syncs it to disk, which can take a moment:
+        // do that away from the main thread.
+        if let finished = medium {
+            medium = nil
+            housekeeping.async { withExtendedLifetime(finished) {} }
+        }
         geometry = nil
         counterAnchorValue = reading
         counterAnchorTurns = 0

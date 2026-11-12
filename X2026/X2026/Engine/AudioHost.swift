@@ -280,12 +280,48 @@ final class AudioHost {
     @ObservationIgnored var forcedOutputDevice: AudioDeviceID?
     @ObservationIgnored var forcedInputDevice: AudioDeviceID?
 
+    /// The device chosen in Settings for PHONES, by UID; nil follows the system.
+    var outputUID: String? {
+        didSet {
+            guard outputUID != oldValue else { return }
+            UserDefaults.standard.set(outputUID, forKey: Self.outputKey)
+            if started { configure(withInput: inputRunning) }
+        }
+    }
+
+    /// The device chosen in Settings for the input jacks, by UID; nil follows the system.
+    var inputUID: String? {
+        didSet {
+            guard inputUID != oldValue else { return }
+            UserDefaults.standard.set(inputUID, forKey: Self.inputKey)
+            refreshInputChannels()
+            if started { configure(withInput: inputRunning) }
+        }
+    }
+
+    private static let outputKey = "audio.output.uid"
+    private static let inputKey = "audio.input.uid"
+
+    private var chosenOutput: AudioDeviceID? {
+        forcedOutputDevice
+            ?? outputUID.flatMap { AudioHardware.device(withUID: $0, input: false) }
+            ?? AudioHardware.defaultDevice(input: false)
+    }
+
+    private var chosenInput: AudioDeviceID? {
+        forcedInputDevice
+            ?? inputUID.flatMap { AudioHardware.device(withUID: $0, input: true) }
+            ?? AudioHardware.defaultDevice(input: true)
+    }
+
     /// I/O buffer we ask the hardware for. Small, so playing through the machine feels live.
     static let preferredBufferFrames: UInt32 = 128
 
     init(core: MachineCore) {
         self.core = core
         context = RenderContext(core: core)
+        outputUID = UserDefaults.standard.string(forKey: Self.outputKey)
+        inputUID = UserDefaults.standard.string(forKey: Self.inputKey)
         refreshInputChannels()
     }
 
@@ -335,7 +371,7 @@ final class AudioHost {
     }
 
     func refreshInputChannels() {
-        guard let device = forcedInputDevice ?? AudioHardware.defaultDevice(input: true) else {
+        guard let device = chosenInput else {
             inputChannelNames = []
             inputDeviceName = ""
             return
@@ -360,10 +396,11 @@ final class AudioHost {
         problem = nil
 
         do {
-            if let forcedOutputDevice {
-                try engine.outputNode.auAudioUnit.setDeviceID(forcedOutputDevice)
+            let wantedOutput = chosenOutput
+            let outputDevice = try engine.outputNode.withAUAudioUnit { unit in
+                if let wantedOutput, unit.deviceID != wantedOutput { try unit.setDeviceID(wantedOutput) }
+                return unit.deviceID
             }
-            let outputDevice = engine.outputNode.auAudioUnit.deviceID
             AudioHardware.requestBuffer(frames: Self.preferredBufferFrames, on: outputDevice)
             outputDeviceName = AudioHardware.name(of: outputDevice)
 
@@ -379,15 +416,16 @@ final class AudioHost {
             }
             let source = context.makeSourceNode(format: format)
             engine.attach(source)
-            engine.connect(source, to: engine.mainMixerNode, format: format)
+            try engine.connectNode(source, to: engine.mainMixerNode, format: format)
             self.source = source
 
             var inputLatency = 0
             if wantInput {
-                if let forcedInputDevice {
-                    try engine.inputNode.auAudioUnit.setDeviceID(forcedInputDevice)
+                let wantedInput = chosenInput
+                let inputDevice = try engine.inputNode.withAUAudioUnit { unit in
+                    if let wantedInput, unit.deviceID != wantedInput { try unit.setDeviceID(wantedInput) }
+                    return unit.deviceID
                 }
-                let inputDevice = engine.inputNode.auAudioUnit.deviceID
                 AudioHardware.requestBuffer(frames: Self.preferredBufferFrames, on: inputDevice)
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 if inputFormat.channelCount > 0 && inputFormat.sampleRate > 0 {
@@ -401,7 +439,7 @@ final class AudioHost {
                         inputRate: inputFormat.sampleRate, outputRate: rate, targetFill: target)
                     let sink = context.makeSinkNode()
                     engine.attach(sink)
-                    engine.connect(engine.inputNode, to: sink, format: inputFormat)
+                    try engine.connectNode(engine.inputNode, to: sink, format: inputFormat)
                     self.sink = sink
                     inputRunning = true
                     let inputFrames = AudioHardware.hardwareLatency(of: inputDevice, input: true)

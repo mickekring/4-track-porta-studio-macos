@@ -237,8 +237,22 @@ final class Desk {
         await move(to: .pressing(lidFront + CGPoint(x: 0, y: -8), lift: 0.4), in: 0.1)
     }
 
+    /// Nobody changes a tape with the transport running: STOP first.
+    private func pressStopIfRunning() async {
+        guard !machine.keysDown.isEmpty else { return }
+        let stop = Self.machineOrigin + CGPoint(x: Layout.keyX[TransportKey.stop.rawValue], y: Layout.keyTop + 11)
+        await move(to: .pressing(stop, lift: 0.5), in: hand == nil ? 0.5 : 0.3)
+        await move(to: .pressing(stop, lift: 0), in: 0.07)
+        machine.press(.stop)
+        await pause(0.09)
+        machine.release(.stop)
+        await move(to: .pressing(stop, lift: 0.5), in: 0.09)
+        await pause(0.25)
+    }
+
     private func putIn(_ cassette: Cassette) async {
         guard machine.loaded == nil else { return }
+        await pressStopIfRunning()
         await openLid()
 
         // Reach for the cassette where it lies and pick it up.
@@ -268,17 +282,7 @@ final class Desk {
     private func takeOutCassette(turnOver: Bool = false) async {
         guard machine.loaded != nil else { return }
 
-        // Nobody opens the lid on a running tape: STOP first.
-        if !machine.keysDown.isEmpty {
-            let stop = Self.machineOrigin + CGPoint(x: Layout.keyX[TransportKey.stop.rawValue], y: Layout.keyTop + 11)
-            await move(to: .pressing(stop, lift: 0.5), in: hand == nil ? 0.5 : 0.3)
-            await move(to: .pressing(stop, lift: 0), in: 0.07)
-            machine.press(.stop)
-            await pause(0.09)
-            machine.release(.stop)
-            await move(to: .pressing(stop, lift: 0.5), in: 0.09)
-            await pause(0.25)
-        }
+        await pressStopIfRunning()
         await openLid()
 
         await move(to: .gripping(wellGrip, lift: 0.5, curl: 0.3), in: 0.3)

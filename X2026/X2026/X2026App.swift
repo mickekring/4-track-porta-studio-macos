@@ -11,13 +11,15 @@ struct X2026App: App {
     @State private var machine: Machine
     @State private var desk: Desk
 
-    /// True when the app is only running to host the unit tests. The test
-    /// bundle is injected after launch, so ask the environment, not the runtime.
+    /// True when the app is only running to host the unit tests or Xcode's
+    /// previews. The test bundle is injected after launch, so ask the
+    /// environment, not the runtime.
     private static let isHostingTests: Bool = {
         let environment = ProcessInfo.processInfo.environment
         return environment["XCTestConfigurationFilePath"] != nil
             || environment["XCTestBundlePath"] != nil
             || environment["XCTestSessionIdentifier"] != nil
+            || environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
     }()
 
     /// True when a debug build was launched just to render the icon.

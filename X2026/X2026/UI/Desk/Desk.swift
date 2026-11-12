@@ -34,8 +34,51 @@ final class Desk {
     /// True while the hand is busy; other requests wait their turn.
     private(set) var busy = false
 
-    /// True when you are leaning in over the machine and it fills the window.
-    var leanedIn = false
+    /// The boxes on the desk you can lean in over until one fills the window.
+    enum Focus: String, CaseIterable, Identifiable, Sendable {
+        case machine
+        case rhythmBox
+        case effectUnit
+        case masterRecorder
+
+        var id: String { rawValue }
+
+        var name: String {
+            switch self {
+            case .machine: Brand.model
+            case .rhythmBox: "TAKT-8"
+            case .effectUnit: "KLANG R-88"
+            case .masterRecorder: "MASTER-2"
+            }
+        }
+
+        /// The box's footprint in scene millimetres.
+        var frame: CGRect {
+            switch self {
+            case .machine: Desk.machineFrame
+            case .rhythmBox: CGRect(origin: Accessories.rhythmBox, size: Accessories.rhythmBoxSize)
+            case .effectUnit: CGRect(origin: Accessories.effectUnit, size: Accessories.effectUnitSize)
+            case .masterRecorder: CGRect(origin: Accessories.masterRecorder, size: Accessories.masterRecorderSize)
+            }
+        }
+    }
+
+    /// What you are leaning in over, or nil when sitting back with the whole
+    /// desk in view. From the desk, a click on a box leans in over it; its
+    /// controls only answer once it is up close.
+    var focus: Focus?
+
+    /// The part of the scene that should fill the window right now.
+    var view: CGRect {
+        guard let focus else { return CGRect(origin: .zero, size: Self.scene) }
+        let frame = focus.frame
+        if focus == .machine {
+            // As large as it will go, with a strip of desk left along the
+            // back edge for the bar at the top of the window.
+            return CGRect(x: frame.minX - 7, y: frame.minY - 14, width: frame.width + 14, height: frame.height + 17)
+        }
+        return frame.insetBy(dx: -12, dy: -14)
+    }
 
     /// The machine's footprint in the scene, front panel included.
     static let machineFrame = CGRect(

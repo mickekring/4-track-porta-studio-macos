@@ -146,7 +146,13 @@ struct MachineCommands: Commands {
             Button("Reset Counter  (0)") { machine.resetCounter() }
         }
         CommandGroup(before: .toolbar) {
-            Button(desk.leanedIn ? "Sit Back  (Z)" : "Lean In  (Z)") { desk.leanedIn.toggle() }
+            Button("Whole Desk") { desk.focus = nil }
+                .keyboardShortcut("0", modifiers: [.command])
+                .disabled(desk.focus == nil)
+            ForEach(Array(Desk.Focus.allCases.enumerated()), id: \.element) { index, device in
+                Button("Zoom In on the \(device.name)") { desk.focus = device }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command])
+            }
             Divider()
         }
         CommandMenu("Tape") {

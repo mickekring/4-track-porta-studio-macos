@@ -14,7 +14,18 @@ struct ManualView: View {
         Chapter(
             title: "Welcome",
             lead: "The \(Brand.maker) \(Brand.model) is a four-track cassette multitracker with a six-input mixer. It records up to two tracks at a time onto ordinary cassettes, in one direction, at 1⅞ ips. There is no screen, no timeline and no undo. What goes on the tape stays on the tape until you record over it.",
-            note: "Out of the box it is set up to play: click the DEMO cassette, wait for the lid to shut, and press PLAY. Press Z to lean in over the machine, and Z again to sit back and see the whole desk."),
+            note: "Click anything on the desk to zoom in until it fills the window: the X-2026, the rhythm box, the reverb, the master recorder. A box only answers to its controls once it is up close. Click the bare desk, press Esc or pinch out to sit back; the bar at the top takes you straight from one box to another."),
+        Chapter(
+            title: "Playing and mixing a tape",
+            lead: "Out of the box the machine is set up to play and mix: click the DEMO cassette on the desk, wait for the lid to shut, zoom in on the X-2026 and press PLAY.",
+            steps: [
+                "The four tape tracks come back on channels 3 to 6: track 1 on channel 3, track 2 on 4, and so on.",
+                "Volume of a track is its grey GAIN knob. It is zero at twelve o'clock: turn it clockwise, toward TRK, for the tape. (Anticlockwise brings up that channel's line input instead.)",
+                "Position of a track is the green PAN knob above it.",
+                "EQ HI and EQ LO shape the whole mix, left and right. MASTER is the overall level; switch the meters to MIXER to watch L and R.",
+                "The two long faders are for whatever is plugged into INPUT 1 and 2. They do nothing to the tape. That is how this machine is built: four knobs are its tape mixer.",
+            ],
+            note: "All of that goes through the REMIX/NORM switch being on REMIX, which is where it starts. In NORM the tracks reach only the headphones, and EQ and MASTER pass them by."),
         Chapter(
             title: "Loading a cassette",
             lead: "Cassettes lie on the desk behind the machine. Click one and it is put in for you. Click the lid to open or close it; with the lid open, click the cassette to take it out.",
@@ -30,7 +41,7 @@ struct ManualView: View {
             steps: [
                 "Click INPUT jack 1 on the front and plug something in: a channel of your Mac's audio input, or the rhythm box on the desk.",
                 "Set GAIN 1 to LINE (MIC for a microphone or a quiet guitar).",
-                "Set REMIX/NORM to NORM and the upper REC TRK selector to 1. Lamp 1 turns amber: armed, and you are hearing the input.",
+                "Set REMIX/NORM to NORM (it starts on REMIX, for mixing) and the upper REC TRK selector to 1. Lamp 1 turns amber: armed, and you are hearing the input.",
                 "Turn PAN 1 fully left. The left side of the stereo buss feeds tracks 1 and 3; the right side feeds 2 and 4.",
                 "Put MASTER at 7 or 8 and the meter switch on TAPE. Raise INPUT fader 1 until meter 1 peaks around +3.",
                 "To hear it: monitor selector on AUX, AUX SEND about halfway, AUX 3 turned towards TRK 1, then bring up MONITOR.",
@@ -95,7 +106,8 @@ struct ManualView: View {
                 "← and → — REWIND and F FWD",
                 "P — foot switch",
                 "0 — reset counter",
-                "Z — lean in / sit back",
+                "Z — zoom in on the X-2026 / back to the desk; Esc — back to the desk",
+                "⌘1 to ⌘4 — zoom in on the X-2026, the rhythm box, the reverb, the master recorder; ⌘0 — whole desk",
                 "⌘L — lid, ⌘E — take the cassette out, ⌘B — turn it over",
             ]),
     ]

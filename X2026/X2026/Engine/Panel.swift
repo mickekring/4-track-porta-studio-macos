@@ -100,13 +100,14 @@ nonisolated struct Panel: Sendable, Equatable, Codable {
     var recordR = RecordSelect.off
     var metersShowMixer = false
 
-    /// How it comes out of the box: everything you need to hear a tape the
-    /// moment you press PLAY — the four tracks spread across the sub mix and
-    /// the headphones on LINE + SUB MIX.
+    /// How it comes out of the box: set up to play a tape and mix it, the
+    /// way the manual sets up for mixdown. REMIX puts the four tracks on the
+    /// stereo buss, so each track's SUB GAIN and SUB PAN, the EQ, MASTER and
+    /// the L/R meters all act on what you hear, and LINE OUT carries the mix.
     ///
-    /// It is in NORM on purpose. In REMIX with the sub mix up, arming a track
-    /// routes its output straight back to its own input: the howl the manual
-    /// warns about. Switch to REMIX to bounce or mix down, as the manual says.
+    /// The price is the one the manual names: arm a track in REMIX while its
+    /// SUB GAIN is turned toward TRK and it feeds back into itself. The
+    /// machine says so in words the first time (see `Machine`).
     static let readyToPlay: Panel = {
         var panel = Panel()
         panel.fader1 = 0.7
@@ -116,10 +117,17 @@ nonisolated struct Panel: Sendable, Equatable, Codable {
         panel.master = 0.75
         panel.monitorLevel = 0.45
         panel.auxSend = 0.5
-        panel.remix = false
+        panel.remix = true
         panel.monitor = .lineAndSubMix
         return panel
     }()
+
+    /// The track (0…3) that is armed straight into the REMIX feedback loop,
+    /// if any: armed, in REMIX, with its own SUB GAIN turned toward TRK.
+    var trackInFeedbackLoop: Int? {
+        guard remix else { return nil }
+        return (0..<4).first { isArmed(track: $0) && subGain[$0] > 0.56 }
+    }
 
     /// Track index (0…3) armed from the left buss, if any.
     var armedFromLeft: Int? {

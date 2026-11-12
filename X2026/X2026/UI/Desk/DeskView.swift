@@ -11,12 +11,32 @@ struct DeskView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            SceneFrame(size: proxy.size, lean: desk.leanedIn ? 1 : 0) { unit in
+            SceneFrame(size: proxy.size, view: desk.view, onDeskTap: { desk.focus = nil }) { unit in
                 scene(unit: unit)
             }
-            .animation(.smooth(duration: 0.55), value: desk.leanedIn)
+            .animation(.smooth(duration: 0.5), value: desk.focus)
         }
         .ignoresSafeArea()
+        .overlay(alignment: .top) {
+            if desk.focus != nil {
+                // The overlay starts below the (hidden) title bar, where
+                // clicks would move the window instead.
+                ZoomBar(desk: desk)
+                    .padding(.top, 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.smooth(duration: 0.3), value: desk.focus == nil)
+        // Pinch out to sit back; pinch in from the desk to lean over the machine.
+        .simultaneousGesture(
+            MagnifyGesture().onEnded { pinch in
+                if pinch.magnification < 0.85 {
+                    desk.focus = nil
+                } else if pinch.magnification > 1.2, desk.focus == nil {
+                    desk.focus = .machine
+                }
+            }
+        )
         // The keyboard works the transport only while the desk itself has
         // focus, so typing on a label never presses RECORD.
         .focusable()
@@ -80,6 +100,12 @@ struct DeskView: View {
             }
             return true
         }
+        if press.key == .escape {
+            // Esc sits back. With nothing to sit back from, leave it alone.
+            guard desk.focus != nil else { return false }
+            if press.phase == .down { desk.focus = nil }
+            return true
+        }
         guard press.phase == .down else { return ["p", "0", "z"].contains(press.key) }
         switch press.key {
         case "p":
@@ -87,7 +113,7 @@ struct DeskView: View {
         case "0":
             machine.resetCounter()
         case "z":
-            desk.leanedIn.toggle()
+            desk.focus = desk.focus == nil ? .machine : nil
         default:
             return false
         }
@@ -130,6 +156,19 @@ struct DeskView: View {
                 .contextMenu { machineMenu }
 
             CableLayer(machine: machine, behind: false)
+
+            // Any box you are not leaning over is a target: one click and it
+            // fills the window. Its own controls stay out of reach until then.
+            ForEach(Desk.Focus.allCases) { device in
+                if desk.focus != device {
+                    ZoomTarget(name: device.name) { desk.focus = device }
+                        .frame(width: device.frame.width * unit, height: device.frame.height * unit)
+                        .offset(x: device.frame.minX * unit, y: device.frame.minY * unit)
+                        .contextMenu {
+                            if device == .machine { machineMenu }
+                        }
+                }
+            }
 
             // The hand, in layers, with whatever it is carrying in between.
             if let pose = desk.hand {
@@ -215,33 +254,32 @@ struct DeskView: View {
     }
 }
 
-/// Fits the scene to the window, and glides between sitting back (the whole
-/// desk in view) and leaning in (the machine filling the window).
+/// Fits a part of the scene to the window, and glides from one part to
+/// another: the whole desk, or one box on it.
 private struct SceneFrame<Content: View>: View, Animatable {
     var size: CGSize
-    /// 0 = sitting back, 1 = leaning in over the machine.
-    var lean: Double
+    /// The rectangle of the scene, in millimetres, that should fill the window.
+    var view: CGRect
+    var onDeskTap: () -> Void
     @ViewBuilder var content: (CGFloat) -> Content
 
-    var animatableData: Double {
-        get { lean }
-        set { lean = newValue }
-    }
-
-    private func fit(_ rect: CGRect) -> (unit: CGFloat, origin: CGPoint) {
-        let unit = min(size.width / rect.width, size.height / rect.height)
-        return (unit, CGPoint(
-            x: size.width / 2 - rect.midX * unit,
-            y: size.height / 2 - rect.midY * unit))
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(view.minX, view.minY), AnimatablePair(view.width, view.height)) }
+        set {
+            view = CGRect(
+                x: newValue.first.first, y: newValue.first.second,
+                width: newValue.second.first, height: newValue.second.second)
+        }
     }
 
     var body: some View {
-        let far = fit(CGRect(origin: .zero, size: Desk.scene))
-        let near = fit(Desk.machineFrame.insetBy(dx: -7, dy: -7))
-        let unit = far.unit + (near.unit - far.unit) * lean
-        let origin = Ease.mix(far.origin, near.origin, lean)
+        let unit = min(size.width / max(1, view.width), size.height / max(1, view.height))
+        let origin = CGPoint(x: size.width / 2 - view.midX * unit, y: size.height / 2 - view.midY * unit)
         ZStack(alignment: .topLeading) {
             WoodDesk(origin: origin)
+                // A click on bare desk sits you back.
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onDeskTap)
             content(unit)
                 .frame(width: Desk.scene.width * unit, height: Desk.scene.height * unit, alignment: .topLeading)
                 .offset(x: origin.x, y: origin.y)
@@ -249,6 +287,84 @@ private struct SceneFrame<Content: View>: View, Animatable {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .clipped()
         .environment(\.unit, unit)
+    }
+}
+
+/// An invisible sheet over a box on the desk: hover shows it can be
+/// approached, a click leans in over it.
+private struct ZoomTarget: View {
+    var name: String
+    var action: () -> Void
+
+    @Environment(\.unit) private var unit
+    @State private var hovering = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: unit * 3)
+            .strokeBorder(.white.opacity(hovering ? 0.55 : 0), lineWidth: max(1.5, unit * 0.5))
+            .background(RoundedRectangle(cornerRadius: unit * 3).fill(.white.opacity(hovering ? 0.05 : 0)))
+            .overlay(alignment: .top) {
+                if hovering {
+                    Label("Zoom in on the \(name)", systemImage: "plus.magnifyingglass")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.black.opacity(0.72), in: Capsule())
+                        .padding(.top, 8)
+                        .fixedSize()
+                        .allowsHitTesting(false)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .onTapGesture(perform: action)
+            .pointerStyle(.link)
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .accessibilityElement()
+            .accessibilityLabel("Zoom in on the \(name)")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default, action)
+    }
+}
+
+/// The strip at the top of the window while leaning in: back to the desk, or
+/// straight across to another box.
+private struct ZoomBar: View {
+    @Bindable var desk: Desk
+
+    var body: some View {
+        HStack(spacing: 4) {
+            chip("Desk", symbol: "chevron.backward", selected: false) { desk.focus = nil }
+                .help("Back to the whole desk (Esc)")
+            Divider()
+                .frame(height: 14)
+                .overlay(Color.white.opacity(0.25))
+                .padding(.horizontal, 3)
+            ForEach(Desk.Focus.allCases) { device in
+                chip(device.name, symbol: nil, selected: desk.focus == device) { desk.focus = device }
+            }
+        }
+        .padding(4)
+        .background(.black.opacity(0.6), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+        .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+    }
+
+    private func chip(_ title: String, symbol: String?, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let symbol { Image(systemName: symbol).font(.system(size: 10, weight: .bold)) }
+                Text(title).font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(selected ? Color.black : Color.white.opacity(0.92))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(selected ? Theme.brandOrange : Color.white.opacity(0.001), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 

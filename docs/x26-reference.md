@@ -111,8 +111,13 @@ MIXER: L, R, (dark), AUX SEND. Under them, four tri-colour arrows (p.8):
   tracks, the rhythm box — is held back by the same amount on its way to the
   record head, so bounces stay aligned; the effects box has a twin on the
   tape path for the same reason. See "Live and late" in `MachineDSP.render`.
-- The factory panel is in NORM, so that arming a track does not put it in the
-  feedback loop described above.
+- The factory panel is in REMIX, the manual's mixdown set-up, so that the
+  first things anyone tries on a tape (SUB GAIN, SUB PAN, EQ, MASTER) all act
+  on it. Arming a track in that state is the feedback loop described above;
+  the first time it happens the machine says so in words and names the knob.
+- The desk is an overview. A click on the X-2026, the rhythm box, the reverb
+  or the master recorder zooms in until it fills the window, and only then do
+  its controls answer (`Desk.focus`).
 - The rhythm box, reverb, master recorder and foot switch on the desk are
   generic stand-ins for the gear the manual tells you to plug in.
 
@@ -137,11 +142,12 @@ X2026/X2026/
   `--self-test`. It inserts a scratch tape by hand, records the rhythm box,
   rewinds by counter, plays back, fast-forwards to the end and ejects,
   printing what it sees.
-- Mouse gestures (debug builds): `open -n X2026.app --args --touch-test`
-  delivers synthetic mouse events to the app's own window — keys, faders,
-  knobs, switches, lid, cassettes — and checks the machine felt each one. It
-  must be started through `open` so the app is active; results are appended
-  to `tmp/self-test.log` in the app's container.
+- Mouse gestures (debug builds): launch the built binary with `--touch-test`.
+  It sends synthetic mouse events to the app's own window — zooming in and
+  out, keys, faders, knobs, switches, lid, cassettes, then mixing the demo
+  tape by dragging its knobs — and checks the machine felt each one. It runs
+  in the background: the views it clicks are made to accept "first mouse", so
+  it needs neither the foreground nor the real pointer.
 - Hardware round trip (debug builds, needs the BlackHole virtual device):
   `--loopback-test` overdubs track 1 onto track 2 through the Mac's output
   and input and reports how far apart they land.

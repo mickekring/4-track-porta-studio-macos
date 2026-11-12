@@ -49,6 +49,43 @@ so this plan was written and then executed without stopping.
 - [x] Demo cassette recorded by the machine itself on first run
 - [x] Lean in / sit back
 
+## Round 2 — feedback after the first test (2026-11-12)
+
+Micke's report: (1) the demo can't be mixed, wants pan and volume; (2) the
+machine is too small on the desk to see switches and knobs — click it to zoom
+in "full screen", and be able to zoom back out; (3) the same for the TAKT-8,
+the KLANG and the MASTER-2.
+
+What the saved panel showed: the long faders 1–2 had been moved (they only
+affect INPUT 1–2) and two SUB PAN / SUB GAIN knobs nudged slightly. The mixer
+works; nobody could tell.
+
+- [x] Zoom: click a device on the desk to fill the window with it; click the
+      desk, press Esc, pinch out or use the bar at the top to go back
+- [x] All four devices zoomable; jump between them from the bar or ⌘1–4
+- [x] On the desk, a click on a device zooms instead of working its controls
+      (no more knobs moved by accident at a size nobody can see)
+- [x] Factory panel back to REMIX (the manual's mixdown set-up) so MASTER, EQ
+      and the L/R meters act on the tape; a saved panel from before is
+      switched once
+- [x] A one-time notice when a track is armed into the REMIX feedback loop,
+      instead of an unexplained howl
+- [x] Manual: say plainly where tape volume and pan live, and what the long
+      faders are for
+- [x] Verify live: ghost finger zooms in and out, then mixes the demo by
+      dragging SUB PAN / SUB GAIN / MASTER and watches LINE OUT follow
+
+Verified: 44 unit tests (the factory panel mixes the tape in REMIX and in
+NORM; the notice; the saved-panel switch). In the running app, 32 gesture
+checks with synthetic mouse events, run in the background: a click on each of
+the four boxes zooms in on it and works nothing; the bar's buttons go across
+and back; a click on bare desk zooms out; SUB PAN 3 dragged down and up sends
+track 1 of the demo hard left then hard right on LINE OUT; SUB GAIN 3 to
+twelve o'clock removes it and back restores it; MASTER fades the mix out.
+Not exercised: Esc, pinch, the ⌘-number shortcuts, and the menus.
+
+Lessons from this round are in `tasks/lessons.md`.
+
 ## Not done / ideas
 
 - [x] Choose input and output devices in Settings

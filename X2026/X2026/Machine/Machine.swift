@@ -41,6 +41,7 @@ final class Machine {
         didSet {
             guard panel != oldValue else { return }
             soundPanelChange(from: oldValue)
+            explainFeedback(from: oldValue)
             post()
             saveSoon()
         }
@@ -145,6 +146,7 @@ final class Machine {
     @ObservationIgnored private var seenLatency = -1
     @ObservationIgnored private var ticks = 0
     @ObservationIgnored private var lastReport = Telemetry()
+    @ObservationIgnored private var explainedFeedback = false
     /// Room a take needs before RECORD is allowed: about five minutes of four-track.
     private static let roomToRecord: Int64 = 150_000_000
     @ObservationIgnored private let log = Logger(subsystem: "se.mickekring.X2026", category: "machine")
@@ -153,6 +155,8 @@ final class Machine {
     @ObservationIgnored private let housekeeping = DispatchQueue(label: "se.mickekring.X2026.tape-housekeeping", qos: .utility)
 
     private static let snapshotKey = "machine.snapshot.v1"
+    /// Set once the owner has been told what the REMIX howl is. Once is enough.
+    private static let explainedFeedbackKey = "machine.explained.feedback"
 
     // MARK: - Lifetime
 
@@ -166,7 +170,13 @@ final class Machine {
         audio = AudioHost(core: core)
 
         let snapshot = Snapshot.load(from: defaults)
-        panel = snapshot?.panel ?? .readyToPlay
+        var restored = snapshot?.panel ?? .readyToPlay
+        if snapshot != nil, (snapshot?.factoryRevision ?? 1) < Snapshot.currentRevision {
+            // Panels saved before the machine shipped set up for mixdown were
+            // in NORM, where MASTER and EQ do nothing to the tape. Once only.
+            restored.remix = true
+        }
+        panel = restored
         effect = snapshot?.effect ?? AuxEffect.Settings()
         var restoredRhythm = snapshot?.rhythm ?? RhythmBox.Settings()
         restoredRhythm.running = false
@@ -187,6 +197,7 @@ final class Machine {
                 log.error("Could not re-thread cassette: \(error)")
             }
         }
+        explainedFeedback = remembers && defaults.bool(forKey: Self.explainedFeedbackKey)
         checkDisk()
         post()
     }
@@ -242,6 +253,16 @@ final class Machine {
         }
         frame.recordInhibit = diskFull
         core.controls.post(frame)
+    }
+
+    /// Says in words what the howl is, the first time a track is armed
+    /// straight into the REMIX loop. The loop itself is left alone: it is
+    /// what the hardware does.
+    private func explainFeedback(from old: Panel) {
+        guard !explainedFeedback, old.trackInFeedbackLoop == nil, let track = panel.trackInFeedbackLoop else { return }
+        explainedFeedback = true
+        if remembers { defaults.set(true, forKey: Self.explainedFeedbackKey) }
+        notice = "Track \(track + 1) is armed while SUB GAIN \(track + 3) is turned toward TRK \(track + 1) and the switch is on REMIX. That sends the track straight back into itself: the howl the manual warns about. Turn SUB GAIN \(track + 3) to 0, or switch to NORM while you record."
     }
 
     private func soundPanelChange(from old: Panel) {
@@ -529,6 +550,10 @@ final class Machine {
     // MARK: - Persistence
 
     private struct Snapshot: Codable {
+        /// Bumped when the factory set-up changes in a way old saves should follow.
+        static let currentRevision = 2
+
+        var factoryRevision: Int?
         var panel: Panel
         var effect: AuxEffect.Settings
         var rhythm: RhythmBox.Settings
@@ -564,6 +589,7 @@ final class Machine {
     private func save() {
         guard remembers else { return }
         let snapshot = Snapshot(
+            factoryRevision: Snapshot.currentRevision,
             panel: panel, effect: effect, rhythm: rhythm, patch: audio.patch,
             mechanicalLevel: mechanicalLevel, latencyTrim: latencyTrim,
             lidOpen: lidOpen, footSwitchConnected: footSwitchConnected,

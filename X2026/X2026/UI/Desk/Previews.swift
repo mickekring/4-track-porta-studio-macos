@@ -48,15 +48,27 @@ extension Machine {
 }
 
 extension Desk {
-    static func forPreview(leanedIn: Bool) -> Desk {
+    static func forPreview(focus: Focus?) -> Desk {
         let desk = Desk(machine: .forPreview())
-        desk.leanedIn = leanedIn
+        desk.focus = focus
         return desk
     }
 }
 
 #Preview("Leaning in", traits: .fixedLayout(width: 1410, height: 850)) {
-    DeskView(desk: .forPreview(leanedIn: true))
+    DeskView(desk: .forPreview(focus: .machine))
+}
+
+#Preview("Rhythm box up close", traits: .fixedLayout(width: 1410, height: 850)) {
+    DeskView(desk: .forPreview(focus: .rhythmBox))
+}
+
+#Preview("Reverb up close", traits: .fixedLayout(width: 1410, height: 850)) {
+    DeskView(desk: .forPreview(focus: .effectUnit))
+}
+
+#Preview("Master recorder up close", traits: .fixedLayout(width: 1410, height: 850)) {
+    DeskView(desk: .forPreview(focus: .masterRecorder))
 }
 
 #Preview("Label editor") {

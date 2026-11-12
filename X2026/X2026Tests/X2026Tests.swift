@@ -957,6 +957,70 @@ struct MachineTests {
         #expect(abs(machine.counterValue(at: machine.telemetry.position)) < 0.001)
     }
 
+    @Test("Arming a track into the REMIX loop is explained in words, once")
+    func feedbackIsExplained() {
+        let machine = Machine.forPreview()
+        machine.panel = .readyToPlay
+        #expect(machine.notice == nil)
+        // Track 1 armed, SUB GAIN 3 toward TRK 1, REMIX: the manual's howl.
+        machine.panel.recordL = .upper
+        #expect(machine.notice?.contains("SUB GAIN 3") == true)
+        machine.notice = nil
+        machine.panel.recordL = .off
+        machine.panel.recordL = .upper
+        #expect(machine.notice == nil)
+    }
+
+    @Test("No lecture when there is no loop")
+    func noFalseAlarm() {
+        let machine = Machine.forPreview()
+        var panel = Panel.readyToPlay
+        panel.remix = false
+        machine.panel = panel
+        machine.panel.recordL = .upper
+        #expect(machine.notice == nil)
+        // REMIX, but that track's SUB GAIN is at twelve o'clock.
+        machine.panel.recordL = .off
+        machine.panel.subGain[0] = 0.5
+        machine.panel.remix = true
+        machine.panel.recordL = .upper
+        #expect(machine.notice == nil)
+        // The other side arms track 2, whose SUB GAIN is up: that is a loop.
+        machine.panel.recordR = .upper
+        #expect(machine.notice?.contains("Track 2") == true)
+    }
+
+    @Test("A panel saved before the machine shipped set up for mixdown is switched to REMIX, once")
+    func savedPanelFollowsTheFactory() throws {
+        let suite = "x2026.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory.appending(path: "x2026-lib-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let key = "machine.snapshot.v1"
+
+        // An owner who left it in NORM with MASTER at 4…
+        let first = Machine(library: TapeLibrary(root: root), defaults: defaults)
+        first.panel.remix = false
+        first.panel.master = 0.4
+        first.powerOff()
+        // …on a build from before saves carried a factory revision.
+        let saved = try #require(defaults.data(forKey: key))
+        var fields = try #require(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        fields.removeValue(forKey: "factoryRevision")
+        defaults.set(try JSONSerialization.data(withJSONObject: fields), forKey: key)
+
+        let second = Machine(library: TapeLibrary(root: root), defaults: defaults)
+        #expect(second.panel.remix)
+        #expect(second.panel.master == 0.4)
+
+        // Having chosen NORM again on this build, it stays chosen.
+        second.panel.remix = false
+        second.powerOff()
+        let third = Machine(library: TapeLibrary(root: root), defaults: defaults)
+        #expect(!third.panel.remix)
+    }
+
     @Test("Transport keys interlock like a mechanical latch bar")
     func keyInterlock() {
         let machine = Machine.forPreview()
@@ -987,33 +1051,96 @@ struct MachineTests {
 
 @Suite("Factory panel")
 struct FactoryPanelTests {
-    @Test("Out of the box, PLAY is all it takes to hear a tape, and arming a track is safe")
-    func readyToPlay() throws {
+    /// A rig with 500 Hz on track 1 from the head on, playing.
+    private func playingRig(_ panel: Panel) throws -> Rig {
         let rig = try Rig()
         let start = rig.oxideFrame
-        for offset in 0..<144_000 {
+        for offset in 0..<(48_000 * 12) {
             rig.medium.write(track: 0, frame: start + offset, value: Level.reference * Float(sin(2 * Double.pi * 500 * Double(offset) / 48_000)))
         }
-        rig.controls.panel = .readyToPlay
+        rig.controls.panel = panel
         rig.controls.transport = TransportRequest(motion: .play)
-        let playing = rig.run(seconds: 1.5)
-        #expect(component(500, in: Array(playing.left[36_000...])) > Level.reference * 0.5)
+        rig.run(seconds: 0.6)
+        return rig
+    }
 
-        // Now arm track 1 and stop, with something plugged into input 1. In
-        // REMIX this panel would feed the track back into itself at a loop
-        // gain a hair under one; in NORM the input is simply passed through.
-        rig.controls.panel.recordL = .upper
-        rig.controls.panel.pan1 = 0
+    /// How much of the 500 Hz reaches each ear over the next third of a second.
+    private func heard(_ rig: Rig) -> (left: Float, right: Float) {
+        rig.run(seconds: 0.2)
+        let out = rig.run(seconds: 0.35)
+        return (component(500, in: out.left), component(500, in: out.right))
+    }
+
+    @Test("Out of the box, PLAY is all it takes, and every mixing control acts on the tape")
+    func mixable() throws {
+        let rig = try playingRig(.readyToPlay)
+        let loud = Level.reference * 0.3
+        // Track 1 starts a little left of centre.
+        let start = heard(rig)
+        #expect(start.left > loud && start.left > start.right)
+
+        // Position: SUB PAN 3.
+        rig.controls.panel.subPan[0] = 1
+        let right = heard(rig)
+        #expect(right.right > loud && right.left < right.right * 0.02)
+        rig.controls.panel.subPan[0] = 0
+        let left = heard(rig)
+        #expect(left.left > loud && left.right < left.left * 0.02)
+
+        // Volume: SUB GAIN 3. Twelve o'clock is off; clockwise is the tape.
+        rig.controls.panel.subGain[0] = 0.5
+        #expect(heard(rig).left < loud * 0.02)
+        rig.controls.panel.subGain[0] = 0.65
+        let low = heard(rig).left
+        rig.controls.panel.subGain[0] = 1
+        let high = heard(rig).left
+        #expect(low > loud * 0.05 && high > low * 4)
+        // Anticlockwise is the line input, not the tape.
+        rig.controls.panel.subGain[0] = 0
+        #expect(heard(rig).left < loud * 0.02)
+        rig.controls.panel.subGain[0] = 0.82
+
+        // Tone and overall level: EQ and MASTER.
+        let flat = heard(rig).left
+        rig.controls.panel.eqLowL = 0
+        #expect(heard(rig).left < flat * 0.8)
+        rig.controls.panel.eqLowL = 0.5
+        rig.controls.panel.master = 0
+        #expect(heard(rig).left < loud * 0.02)
+        rig.controls.panel.master = 0.75
+
+        // The long faders belong to the input jacks and leave the tape alone.
+        let before = heard(rig).left
+        rig.controls.panel.fader1 = 0
+        rig.controls.panel.fader2 = 0
+        #expect(abs(heard(rig).left / before - 1) < 0.1)
+
+        // And LINE OUT, where the master recorder listens, carries the mix.
         rig.controls.panel.metersShowMixer = true
-        rig.controls.transport = TransportRequest()
-        rig.run(seconds: 1, signal: sine(100, amplitude: 0.05))
-        var loudest: Float = 0
-        for _ in 0..<10 {
-            rig.run(seconds: 0.1, signal: sine(100, amplitude: 0.05))
-            loudest = max(loudest, rig.telemetry.meters[0])
-        }
-        // 0.05 in, at unity or thereabouts: about a fifth of the 0 mark, not forty times it.
-        #expect(loudest < 0.4, "LINE L reads \(loudest) of the 0 mark")
+        rig.run(seconds: 0.5)
+        #expect(rig.telemetry.meters[0] > 0.3)
+    }
+
+    @Test("In NORM the tracks still mix in the headphones, past EQ and MASTER")
+    func mixableInNorm() throws {
+        var panel = Panel.readyToPlay
+        panel.remix = false
+        let rig = try playingRig(panel)
+        let loud = Level.reference * 0.3
+        rig.controls.panel.subPan[0] = 1
+        let right = heard(rig)
+        #expect(right.right > loud && right.left < right.right * 0.02)
+        rig.controls.panel.subGain[0] = 0.5
+        #expect(heard(rig).right < loud * 0.02)
+        rig.controls.panel.subGain[0] = 0.82
+        // The sub mix reaches the headphones directly here: MASTER does not touch it…
+        rig.controls.panel.master = 0
+        #expect(heard(rig).right > loud)
+        // …and nothing reaches LINE OUT.
+        rig.controls.panel.master = 0.75
+        rig.controls.panel.metersShowMixer = true
+        rig.run(seconds: 0.5)
+        #expect(rig.telemetry.meters[1] < 0.01)
     }
 }
 

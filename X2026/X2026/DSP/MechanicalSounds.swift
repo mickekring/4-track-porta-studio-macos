@@ -149,7 +149,12 @@ nonisolated struct MechanicalSounds {
         left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frames: Int,
         windSpeed: Double, windTop: Double, capstan: Double, level: Float
     ) {
-        guard let voices, level > 0.0005 else { return }
+        guard let voices else { return }
+        guard level > 0.0005 else {
+            // Muted: let pending clunks lapse instead of saving them up.
+            for index in 0..<Self.voiceCount { voices[index].active = false }
+            return
+        }
 
         // Impacts.
         for index in 0..<Self.voiceCount where voices[index].active {

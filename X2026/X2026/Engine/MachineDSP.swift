@@ -111,6 +111,7 @@ nonisolated struct MachineDSP {
     private let positions: UnsafeMutablePointer<Double>
     private let tapeBussL: UnsafeMutablePointer<Float>
     private let tapeBussR: UnsafeMutablePointer<Float>
+    private let lateAux: UnsafeMutablePointer<Float>
     private let trackOut: UnsafeMutablePointer<Float>
     private let raw: UnsafeMutablePointer<Float>
     private let leak: UnsafeMutablePointer<Float>
@@ -129,6 +130,8 @@ nonisolated struct MachineDSP {
 
     private var couplingL = DCBlocker()
     private var couplingR = DCBlocker()
+    private var recordCouplingL = DCBlocker()
+    private var recordCouplingR = DCBlocker()
     private var previousLineL: Float = 0
     private var previousLineR: Float = 0
 
@@ -140,7 +143,13 @@ nonisolated struct MachineDSP {
     private var eraseGapFrames = 12_598
 
     private var effect = AuxEffect()
+    /// A twin of the effects box that hears the AUX buss as the tape will:
+    /// with tape-derived signal held back by the audio round trip.
+    private var recordEffect = AuxEffect()
     private var mechanics = MechanicalSounds()
+    /// Counts every time the fuse has had to clear the signal path.
+    private(set) var fuseCount: UInt32 = 0
+    private var previousLatency = 0
     private var noise = NoiseSource(seed: 0x5EED_F00D)
 
     // MARK: Lifetime
@@ -164,6 +173,8 @@ nonisolated struct MachineDSP {
         tapeBussL.initialize(repeating: 0, count: Self.historySize)
         tapeBussR = .allocate(capacity: Self.historySize)
         tapeBussR.initialize(repeating: 0, count: Self.historySize)
+        lateAux = .allocate(capacity: Self.historySize)
+        lateAux.initialize(repeating: 0, count: Self.historySize)
         trackOut = .allocate(capacity: Self.trackCount)
         trackOut.initialize(repeating: 0, count: Self.trackCount)
         raw = .allocate(capacity: Self.trackCount)
@@ -177,6 +188,7 @@ nonisolated struct MachineDSP {
     mutating func tearDown() {
         medium = nil
         effect.release()
+        recordEffect.release()
         mechanics.release()
         jacks.deallocate()
         lineOut.deallocate()
@@ -187,6 +199,7 @@ nonisolated struct MachineDSP {
         positions.deallocate()
         tapeBussL.deallocate()
         tapeBussR.deallocate()
+        lateAux.deallocate()
         trackOut.deallocate()
         raw.deallocate()
         leak.deallocate()
@@ -201,9 +214,17 @@ nonisolated struct MachineDSP {
             heads[track].leak.setCutoff(3000, sampleRate: sampleRate)
         }
         effect.prepare(sampleRate: sampleRate)
+        recordEffect.prepare(sampleRate: sampleRate)
         mechanics.prepare(sampleRate: sampleRate)
         couplingL.setCutoff(6, sampleRate: sampleRate)
         couplingR.setCutoff(6, sampleRate: sampleRate)
+        recordCouplingL.setCutoff(6, sampleRate: sampleRate)
+        recordCouplingR.setCutoff(6, sampleRate: sampleRate)
+        for index in 0..<Self.historySize {
+            tapeBussL[index] = 0
+            tapeBussR[index] = 0
+            lateAux[index] = 0
+        }
         meterAttack = Float(1 - exp(-1 / (0.004 * sampleRate)))
         meterRelease = Float(1 - exp(-1 / (0.28 * sampleRate)))
         biasStep = Float(1 / (0.012 * sampleRate))
@@ -231,7 +252,6 @@ nonisolated struct MachineDSP {
     @discardableResult
     mutating func unload() -> Double {
         let position = deck.position
-        medium?.flush()
         medium = nil
         deck.unload()
         requestedMotion = .stop
@@ -264,12 +284,17 @@ nonisolated struct MachineDSP {
         recordLowR.reset()
         couplingL = DCBlocker()
         couplingR = DCBlocker()
+        recordCouplingL = DCBlocker()
+        recordCouplingR = DCBlocker()
         couplingL.setCutoff(6, sampleRate: sampleRate)
         couplingR.setCutoff(6, sampleRate: sampleRate)
+        recordCouplingL.setCutoff(6, sampleRate: sampleRate)
+        recordCouplingR.setCutoff(6, sampleRate: sampleRate)
         meters = Quad(repeating: 0)
         for index in 0..<Self.historySize {
             tapeBussL[index] = 0
             tapeBussR[index] = 0
+            lateAux[index] = 0
         }
         for track in 0..<Self.trackCount {
             channels[track] = TapeChannel(seed: UInt32(track + 1))
@@ -280,6 +305,8 @@ nonisolated struct MachineDSP {
             leak[track] = 0
         }
         effect.clear()
+        recordEffect.clear()
+        fuseCount &+= 1
     }
 
     mutating func trigger(_ sound: MechanicalSound) {
@@ -296,6 +323,7 @@ nonisolated struct MachineDSP {
         report.capstan = Float(deck.capstan)
         report.windSpeed = Float(deck.windSpeed)
         report.autoStopCount = deck.autoStopCount
+        report.fuseCount = fuseCount
         return report
     }
 
@@ -365,12 +393,21 @@ nonisolated struct MachineDSP {
 
     /// Runs the machine for `frames` samples (at most `maximumFrames`),
     /// writing the headphone signal to `left` and `right`.
+    ///
+    /// ## Live and late
+    /// Sound from the Mac's inputs reaches us late, by the round trip through
+    /// its audio hardware; so it is written to the tape that much *earlier*,
+    /// at the spot the performer was hearing when they played. Everything
+    /// that does not make that trip — tape tracks, the rhythm box — is "late"
+    /// signal: for the tape (and LINE OUT) it is held back by the same amount
+    /// so that it lands where it belongs. The headphones hear both undelayed.
     mutating func render(
         frames: Int,
         left: UnsafeMutablePointer<Float>,
         right: UnsafeMutablePointer<Float>,
         controls: ControlFrame
     ) -> Telemetry {
+        guard frames > 0 else { return idleReport() }
         let panel = controls.panel
         if controls.transport.motion != requestedMotion {
             requestedMotion = controls.transport.motion
@@ -379,6 +416,7 @@ nonisolated struct MachineDSP {
         aimGains(panel, frames: frames)
         updateEqualiser(panel)
         effect.apply(controls.effect)
+        recordEffect.apply(controls.effect)
 
         let pitch = (panel.pitch - 0.5) * 2
         let noiseReduction = panel.noiseReduction
@@ -388,6 +426,20 @@ nonisolated struct MachineDSP {
         let mic1: Float = panel.micGain1 ? 10 : 1
         let mic2: Float = panel.micGain2 ? 10 : 1
         let latency = min(Self.historySize - 4, max(0, controls.recordLatency))
+        let internalJacks = controls.internalJacks
+        let twinEffect = latency > 0 && controls.effect.connected
+        if latency > 0 && previousLatency == 0 {
+            // The tape's own copy of the buss is only worked out while there
+            // is a round trip to allow for. When one appears, start that copy
+            // from exactly where the monitor buss is now.
+            recordHighL = highL
+            recordLowL = lowL
+            recordHighR = highR
+            recordLowR = lowR
+            recordCouplingL = couplingL
+            recordCouplingR = couplingR
+        }
+        previousLatency = latency
         let mask = Self.historyMask
         let span = Self.maximumFrames
 
@@ -395,15 +447,17 @@ nonisolated struct MachineDSP {
         if let track = panel.armedFromLeft { armed |= 1 << UInt8(track) }
         if let track = panel.armedFromRight { armed |= 1 << UInt8(track) }
         let recordWanted = (controls.transport.recordKey || controls.transport.punch)
-            && !recordProtected && medium != nil
+            && !recordProtected && !controls.recordInhibit && medium != nil
         let tape = medium
         var anyRecording = false
+        var sentinel: Float = 0
 
         for frame in 0..<frames {
             deck.advance(pitch: pitch)
             let playing = deck.motion == .play
             let recordOn = recordWanted && playing
-            let contact = Float(min(1, deck.capstan * 2.5))
+            // The head only touches the tape while the pinch roller has it.
+            let contact: Float = deck.isRolling ? Float(min(1, deck.capstan * 2.5)) : 0
             positions[clock & mask] = deck.oxideFrame
 
             // --- Off the tape -------------------------------------------------
@@ -442,87 +496,126 @@ nonisolated struct MachineDSP {
             }
 
             // --- Channels 1–2 ------------------------------------------------
-            var aux: Float = 0
-            var bussL = noise.next() * Self.floorNoise
-            var bussR = noise.next() * Self.floorNoise
+            var auxLive: Float = 0
+            var auxLate: Float = 0
+            var liveL = noise.next() * Self.floorNoise
+            var liveR = noise.next() * Self.floorNoise
+            var lateL: Float = 0
+            var lateR: Float = 0
 
             let post1 = Saturation.soft(jacks[frame] * mic1) * gains[Gain.fader].next()
-            aux += post1 * gains[Gain.aux12].next()
-            bussL += post1 * gains[Gain.panL].next()
-            bussR += post1 * gains[Gain.panR].next()
+            let send1 = post1 * gains[Gain.aux12].next()
+            let left1 = post1 * gains[Gain.panL].next()
+            let right1 = post1 * gains[Gain.panR].next()
+            if internalJacks & 0b01 != 0 {
+                auxLate += send1
+                lateL += left1
+                lateR += right1
+            } else {
+                auxLive += send1
+                liveL += left1
+                liveR += right1
+            }
 
             let post2 = Saturation.soft(jacks[span + frame] * mic2) * gains[Gain.fader + 1].next()
-            aux += post2 * gains[Gain.aux12 + 1].next()
-            bussL += post2 * gains[Gain.panL + 1].next()
-            bussR += post2 * gains[Gain.panR + 1].next()
+            let send2 = post2 * gains[Gain.aux12 + 1].next()
+            let left2 = post2 * gains[Gain.panL + 1].next()
+            let right2 = post2 * gains[Gain.panR + 1].next()
+            if internalJacks & 0b10 != 0 {
+                auxLate += send2
+                lateL += left2
+                lateR += right2
+            } else {
+                auxLive += send2
+                liveL += left2
+                liveR += right2
+            }
 
             // --- Channels 3–6 and the sub mix ---------------------------------
-            var subInputL: Float = 0
-            var subInputR: Float = 0
-            var subTapeL: Float = 0
-            var subTapeR: Float = 0
+            var subLiveL: Float = 0
+            var subLiveR: Float = 0
+            var subLateL: Float = 0
+            var subLateR: Float = 0
             for channel in 0..<Self.trackCount {
                 let line = Self.clip(jacks[(2 + channel) * span + frame])
                 let track = trackOut[channel]
-                aux += line * gains[Gain.auxInput + channel].next()
-                    + track * gains[Gain.auxTrack + channel].next()
+                let lineIsLate = internalJacks & (0b100 << UInt8(channel)) != 0
+                // An input-monitored track is passing on the buss, not the tape.
+                let trackIsLive = inputMonitor & (1 << UInt8(channel)) != 0
+
+                let sendLine = line * gains[Gain.auxInput + channel].next()
+                let sendTrack = track * gains[Gain.auxTrack + channel].next()
+                if lineIsLate { auxLate += sendLine } else { auxLive += sendLine }
+                if trackIsLive { auxLive += sendTrack } else { auxLate += sendTrack }
+
                 let fromLine = line * gains[Gain.subInput + channel].next()
                 let fromTrack = track * gains[Gain.subTrack + channel].next()
                 let panL = gains[Gain.subPanL + channel].next()
                 let panR = gains[Gain.subPanR + channel].next()
-                if inputMonitor & (1 << UInt8(channel)) != 0 {
-                    // An input-monitored track is live signal, not tape.
-                    subInputL += (fromLine + fromTrack) * panL
-                    subInputR += (fromLine + fromTrack) * panR
-                } else {
-                    subInputL += fromLine * panL
-                    subInputR += fromLine * panR
-                    subTapeL += fromTrack * panL
-                    subTapeR += fromTrack * panR
-                }
+                let live = (lineIsLate ? 0 : fromLine) + (trackIsLive ? fromTrack : 0)
+                let late = (lineIsLate ? fromLine : 0) + (trackIsLive ? 0 : fromTrack)
+                subLiveL += live * panL
+                subLiveR += live * panR
+                subLateL += late * panL
+                subLateR += late * panR
             }
 
             // --- AUX buss and the effect loop ---------------------------------
-            let auxOut = Self.clip(aux) * gains[Gain.auxSend].next()
+            let send = gains[Gain.auxSend].next()
+            let returnL = gains[Gain.returnL].next()
+            let returnR = gains[Gain.returnR].next()
+            let auxSum = auxLive + auxLate
+            let auxOut = Self.clip(auxSum) * send
             let wet = effect.process(auxOut)
-            bussL += wet.left * gains[Gain.returnL].next()
-            bussR += wet.right * gains[Gain.returnR].next()
 
             // --- Stereo buss → EQ → MASTER -------------------------------------
-            var tapeL: Float = 0
-            var tapeR: Float = 0
             if remix {
-                bussL += subInputL
-                bussR += subInputR
-                tapeL = subTapeL
-                tapeR = subTapeR
+                liveL += subLiveL
+                liveR += subLiveR
+                lateL += subLateL
+                lateR += subLateR
             }
             let master = gains[Gain.master].next()
-            let lineL = couplingL.process(Self.clip(lowL.process(highL.process(bussL + tapeL)))) * master
-            let lineR = couplingR.process(Self.clip(lowR.process(highR.process(bussR + tapeR)))) * master
+            let mixedL = lowL.process(highL.process(liveL + lateL + wet.left * returnL))
+            let mixedR = lowR.process(highR.process(liveR + lateR + wet.right * returnR))
+            let lineL = couplingL.process(Self.clip(mixedL)) * master
+            let lineR = couplingR.process(Self.clip(mixedR)) * master
+            previousLineL = lineL
+            previousLineR = lineR
 
-            // What goes to tape. Live inputs arrive late by the round trip
-            // through the computer's audio hardware, so tape-derived signal
-            // is held back by the same amount and both are written to the
-            // spot on the tape the performer was actually hearing.
+            // The same buss as the tape hears it: late signal held back.
+            tapeBussL[clock & mask] = lateL
+            tapeBussR[clock & mask] = lateR
+            lateAux[clock & mask] = auxLate
+            var tapedL = mixedL
+            var tapedR = mixedR
             var recordL = lineL
             var recordR = lineR
             if latency > 0 {
-                tapeBussL[clock & mask] = tapeL
-                tapeBussR[clock & mask] = tapeR
-                let lateL = tapeBussL[(clock - latency) & mask]
-                let lateR = tapeBussR[(clock - latency) & mask]
-                recordL = Self.clip(recordLowL.process(recordHighL.process(bussL + lateL))) * master
-                recordR = Self.clip(recordLowR.process(recordHighR.process(bussR + lateR))) * master
+                let heldL = tapeBussL[(clock - latency) & mask]
+                let heldR = tapeBussR[(clock - latency) & mask]
+                var wetForTape = wet
+                if twinEffect {
+                    let heldAux = lateAux[(clock - latency) & mask]
+                    wetForTape = recordEffect.process(Self.clip(auxLive + heldAux) * send)
+                }
+                tapedL = recordLowL.process(recordHighL.process(liveL + heldL + wetForTape.left * returnL))
+                tapedR = recordLowR.process(recordHighR.process(liveR + heldR + wetForTape.right * returnR))
+                recordL = recordCouplingL.process(Self.clip(tapedL)) * master
+                recordR = recordCouplingR.process(Self.clip(tapedR)) * master
             }
-            previousLineL = lineL
-            previousLineR = lineR
             lineOut[frame] = recordL
             lineOut[span + frame] = recordR
+
+            // Everything that could carry a non-number, before any clipping
+            // has had the chance to hide it.
+            sentinel = mixedL + mixedR + tapedL + tapedR + auxSum + wet.left + wet.right
+                + trackOut[0] + trackOut[1] + trackOut[2] + trackOut[3]
 
             // --- Onto the tape ---------------------------------------------------
             let writeNow = positions[(clock - latency) & mask]
             let writePrevious = positions[(clock - latency - 1) & mask]
+            let travelled = writeNow - writePrevious
             for track in 0..<Self.trackCount {
                 let recording = recordOn && armed & (1 << UInt8(track)) != 0
                 var head = heads[track]
@@ -531,8 +624,17 @@ nonisolated struct MachineDSP {
                     continue
                 }
                 anyRecording = anyRecording || recording
-                head.bias = recording ? min(1, head.bias + biasStep) : max(0, head.bias - biasStep)
-                head.erase = recording ? min(1, head.erase + eraseStep) : max(0, head.erase - eraseStep)
+                if recording {
+                    // Bias and erase current come up as tape passes the
+                    // head, so the start of a take always fades in.
+                    if travelled > 0 {
+                        head.bias = min(1, head.bias + biasStep)
+                        head.erase = min(1, head.erase + eraseStep)
+                    }
+                } else {
+                    head.bias = max(0, head.bias - biasStep)
+                    head.erase = max(0, head.erase - eraseStep)
+                }
 
                 let magnetisation = channels[track].record(track & 1 == 0 ? recordL : recordR, noiseReduction: noiseReduction)
                 head.h0 = head.h1
@@ -541,7 +643,6 @@ nonisolated struct MachineDSP {
                 head.h3 = magnetisation
                 leak[track] = Self.recordLeak * head.bias * (magnetisation - head.leak.process(magnetisation))
 
-                let travelled = writeNow - writePrevious
                 if let tape, travelled > 0, travelled < 16 {
                     var index = Int(writePrevious.rounded(.down)) + 1
                     let last = Int(writeNow.rounded(.down))
@@ -580,8 +681,8 @@ nonisolated struct MachineDSP {
                 monitorL = lineL
                 monitorR = lineR
                 if !remix {
-                    monitorL += subInputL + subTapeL
-                    monitorR += subInputR + subTapeR
+                    monitorL += subLiveL + subLateL
+                    monitorR += subLiveR + subLateR
                 }
             }
             let monitorGain = gains[Gain.monitor].next()
@@ -610,7 +711,7 @@ nonisolated struct MachineDSP {
 
         // A fuse. Nothing above should ever produce a non-number, but if it
         // did it would circulate in the filters for ever: clear them instead.
-        if !(previousLineL.isFinite && previousLineR.isFinite && left[frames - 1].isFinite && right[frames - 1].isFinite) {
+        if !sentinel.isFinite {
             blowFuse()
             left.update(repeating: 0, count: frames)
             right.update(repeating: 0, count: frames)
@@ -621,15 +722,14 @@ nonisolated struct MachineDSP {
             left: left, right: right, frames: frames,
             windSpeed: deck.windSpeed, windTop: deck.windTopSpeed, capstan: deck.capstan,
             level: controls.mechanicalLevel)
+        // The clunks ride on top of the headphone signal: keep the sum legal.
+        for frame in 0..<frames {
+            left[frame] = max(-1, min(1, left[frame]))
+            right[frame] = max(-1, min(1, right[frame]))
+        }
 
         // --- Report -----------------------------------------------------------
-        var report = Telemetry()
-        report.hasTape = deck.hasTape
-        report.position = deck.position
-        report.motion = deck.motion
-        report.capstan = Float(deck.capstan)
-        report.windSpeed = Float(deck.windSpeed)
-        report.autoStopCount = deck.autoStopCount
+        var report = idleReport()
         report.isRecording = anyRecording
         let playing = deck.motion == .play
         for track in 0..<Self.trackCount {

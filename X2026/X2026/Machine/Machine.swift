@@ -111,6 +111,10 @@ final class Machine {
     private(set) var isRecording = false
     /// True while tape is moving in any direction.
     private(set) var isMoving = false
+    /// True when the disk the tapes live on has no room left to record.
+    private(set) var diskFull = false
+    /// Something the owner should be told, shown once.
+    var notice: String?
 
     // MARK: Private
 
@@ -127,6 +131,9 @@ final class Machine {
     @ObservationIgnored private var seenAutoStops: UInt32 = 0
     @ObservationIgnored private var seenLatency = -1
     @ObservationIgnored private var ticks = 0
+    @ObservationIgnored private var lastReport = Telemetry()
+    /// Room a take needs before RECORD is allowed: about five minutes of four-track.
+    private static let roomToRecord: Int64 = 150_000_000
     @ObservationIgnored private let log = Logger(subsystem: "se.mickekring.X2026", category: "machine")
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let remembers: Bool
@@ -167,6 +174,7 @@ final class Machine {
                 log.error("Could not re-thread cassette: \(error)")
             }
         }
+        checkDisk()
         post()
     }
 
@@ -188,8 +196,10 @@ final class Machine {
         poll = nil
         releaseKeys(sound: nil)
         rememberTapePosition()
-        medium?.flush(wait: true)
+        // A mixdown still rolling is closed properly rather than cut off.
+        audio.context.masterRecorder.end()
         audio.stop()
+        medium?.flush(wait: true)
         save()
     }
 
@@ -213,6 +223,11 @@ final class Machine {
             punch: punchedIn)
         let trim = Int((latencyTrim / 1000 * audio.sampleRate).rounded())
         frame.recordLatency = max(0, audio.roundTripLatency + trim)
+        // Sources inside the Mac make no trip through its audio hardware.
+        for jack in 0..<JackPatch.count where audio.patch[jack] == .rhythmBox {
+            frame.internalJacks |= 1 << UInt8(jack)
+        }
+        frame.recordInhibit = diskFull
         core.controls.post(frame)
     }
 
@@ -232,6 +247,16 @@ final class Machine {
     /// A finger comes down on a key.
     func press(_ key: TransportKey) {
         keyHeld = key
+        if key == .play || key == .record {
+            // Have the tape under the head in memory before it starts to move.
+            prefetch(around: core.tapePosition)
+        }
+        if key == .record {
+            checkDisk()
+            if diskFull && loaded != nil {
+                notice = "The disk is nearly full, so the X-2026 will play but not record. Free some space and press RECORD again."
+            }
+        }
         switch key {
         case .stop:
             if keysDown.isEmpty {
@@ -395,9 +420,22 @@ final class Machine {
         library.update(cassette)
     }
 
+    /// Asks for what was just recorded to be written out to disk — a moment
+    /// later, once the heads are off the tape, so the audio thread is never
+    /// touching a page that is being written back.
     private func flushTape() {
         guard let medium else { return }
-        housekeeping.async { medium.flush() }
+        housekeeping.asyncAfter(deadline: .now() + 1.5) { medium.flush() }
+    }
+
+    private func checkDisk() {
+        let values = try? library.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        let free = values?.volumeAvailableCapacityForImportantUsage ?? .max
+        let full = free < Self.roomToRecord
+        if full != diskFull {
+            diskFull = full
+            post()
+        }
     }
 
     /// Warms the stretch of tape around the head so the audio thread never
@@ -421,12 +459,19 @@ final class Machine {
 
     // MARK: - Telemetry
 
-    /// Latest report from the audio thread.
-    var telemetry: Telemetry { core.telemetry.read() ?? Telemetry() }
+    /// Latest report from the audio thread. If a read happens to collide
+    /// with the audio thread writing, the previous report is good enough.
+    var telemetry: Telemetry {
+        if let fresh = core.telemetry.read() { lastReport = fresh }
+        return lastReport
+    }
 
     private func tick() {
         guard let report = core.telemetry.read() else { return }
+        lastReport = report
         ticks += 1
+        audio.refineLatency()
+        if ticks % 60 == 0 { checkDisk() }
 
         if report.autoStopCount != seenAutoStops {
             seenAutoStops = report.autoStopCount
@@ -441,10 +486,12 @@ final class Machine {
         if fresh != lamps { lamps = fresh }
         if report.isRecording != isRecording { isRecording = report.isRecording }
         let moving = report.capstan > 0.01 || abs(report.windSpeed) > 0.01
+        let justStopped = isMoving && !moving
         if moving != isMoving { isMoving = moving }
 
-        // Twice a second: keep the page cache ahead of the head.
-        if moving && ticks % 15 == 0 { prefetch(around: report.position) }
+        // Keep the page cache ahead of the head: twice a second while the
+        // tape moves, and once more where it comes to rest after a wind.
+        if (moving && ticks % 15 == 0) || justStopped { prefetch(around: report.position) }
     }
 
     // MARK: - Persistence

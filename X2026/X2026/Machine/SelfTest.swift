@@ -212,6 +212,58 @@ enum SelfTest {
         say(failures == 0 ? "PASS: every gesture reached the machine" : "\(failures) gesture check(s) failed")
     }
 
+    // MARK: - Mixdown
+
+    static var isMixdownRequested: Bool { CommandLine.arguments.contains("--mixdown-test") }
+
+    /// Plays the demo cassette into the master recorder for a quarter of a
+    /// minute and reports on the file that comes out.
+    static func runMixdown(machine: Machine, desk: Desk) async {
+        await wait(1.0)
+        guard let demo = machine.library.cassettes.first(where: { $0.title == DemoTape.title }) else {
+            return say("SKIPPED: no demo cassette on the desk yet")
+        }
+        machine.mechanicalLevel = 0
+        if machine.loaded != nil {
+            desk.eject()
+            await idle(desk)
+        }
+        let leftAt = demo.position
+        desk.insert(demo)
+        await idle(desk)
+        guard machine.loaded?.id == demo.id else { return say("FAIL: demo cassette did not load") }
+
+        var panel = Panel.readyToPlay
+        panel.remix = true
+        panel.monitorLevel = 0
+        machine.panel = panel
+        let folder = URL.documentsDirectory.appending(path: "Mixdowns", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appending(path: "self-test mix.wav")
+        try? FileManager.default.removeItem(at: url)
+        let recorder = machine.audio.context.masterRecorder
+        do { try recorder.begin(url: url) } catch { return say("FAIL: master recorder would not start: \(error)") }
+        await tap(.play, on: machine)
+        var loudest: Float = 0
+        for _ in 0..<150 {
+            await wait(0.1)
+            let levels = recorder.levels
+            loudest = max(loudest, levels.left, levels.right)
+        }
+        await tap(.stop, on: machine)
+        let finished = recorder.end()
+        say(String(format: "mixed 15 s; loudest LINE OUT %.1f dB; file %@", Level.decibels(loudest), finished?.path(percentEncoded: false) ?? "none"))
+
+        // Put the demo back the way it was found.
+        desk.eject()
+        await idle(desk)
+        if var back = machine.library.cassette(withID: demo.id) {
+            back.position = leftAt
+            machine.library.update(back)
+        }
+        say("done")
+    }
+
     // MARK: - Loopback
 
     static var isLoopbackRequested: Bool { CommandLine.arguments.contains("--loopback-test") }
@@ -303,6 +355,8 @@ enum SelfTest {
         await tap(.stop, on: machine)
         await wait(0.3)
 
+        say("round trip now \(machine.audio.roundTripLatency) frames; \(machine.audio.latencyReport)")
+
         // Compare the two tracks over two seconds in the middle.
         let origin = Int(start - leader) + 48_000
         let count = 96_000
@@ -312,7 +366,11 @@ enum SelfTest {
         guard original.count == count, overdub.count == count + 2 * reach else { return say("FAIL: could not read the tape") }
         func energy(_ samples: [Float]) -> Float { samples.reduce(0) { $0 + $1 * $1 } }
         say(String(format: "track 1 rms %.4f, track 2 rms %.4f", (energy(original) / Float(count)).squareRoot(), (energy(overdub) / Float(overdub.count)).squareRoot()))
-        var best = (lag: 0, score: -Float.infinity)
+        // Drums repeat, so the correlation has several near-equal peaks one
+        // tone-period apart. The round trip is known to within a buffer or
+        // two, so look for the alignment only within ±5 ms.
+        let window = 240
+        var scores: [(lag: Int, score: Float)] = []
         for lag in stride(from: -reach, through: reach, by: 1) {
             var sum: Float = 0
             var index = 0
@@ -320,7 +378,12 @@ enum SelfTest {
                 sum += original[index] * overdub[index + reach + lag]
                 index += 3
             }
-            if sum > best.score { best = (lag, sum) }
+            scores.append((lag, sum))
+        }
+        let best = scores.filter { abs($0.lag) <= window }.max { $0.score < $1.score } ?? (0, 0)
+        let overall = scores.max { $0.score < $1.score } ?? (0, 0)
+        if overall.lag != best.lag {
+            say(String(format: "(a repeat of the pattern also matches at %+d frames, %.2f× as well)", overall.lag, overall.score / max(best.score, 1e-9)))
         }
         let milliseconds = Double(best.lag) / CassetteStandard.sampleRate * 1000
         say(String(format: "overdub sits %+d tape frames (%+.2f ms) from the track it was played to", best.lag, milliseconds))

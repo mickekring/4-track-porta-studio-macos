@@ -35,6 +35,14 @@ struct DeskView: View {
                 machine.relabel(edited)
             }
         }
+        .alert(
+            "A word from the machine",
+            isPresented: Binding(get: { machine.notice != nil }, set: { if !$0 { machine.notice = nil } })
+        ) {
+            Button("OK") { machine.notice = nil }
+        } message: {
+            Text(machine.notice ?? "")
+        }
         .confirmationDialog(
             "Throw this cassette away?",
             isPresented: Binding(get: { desk.discarding != nil }, set: { if !$0 { desk.discarding = nil } }),

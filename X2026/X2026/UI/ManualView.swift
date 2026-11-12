@@ -14,7 +14,7 @@ struct ManualView: View {
         Chapter(
             title: "Welcome",
             lead: "The \(Brand.maker) \(Brand.model) is a four-track cassette multitracker with a six-input mixer. It records up to two tracks at a time onto ordinary cassettes, in one direction, at 1⅞ ips. There is no screen, no timeline and no undo. What goes on the tape stays on the tape until you record over it.",
-            note: "Press Z to lean in over the machine, and Z again to sit back and see the whole desk."),
+            note: "Out of the box it is set up to play: click the DEMO cassette, wait for the lid to shut, and press PLAY. Press Z to lean in over the machine, and Z again to sit back and see the whole desk."),
         Chapter(
             title: "Loading a cassette",
             lead: "Cassettes lie on the desk behind the machine. Click one and it is put in for you. Click the lid to open or close it; with the lid open, click the cassette to take it out.",

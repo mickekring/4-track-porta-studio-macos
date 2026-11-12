@@ -32,7 +32,7 @@ struct X2026App: App {
     /// Errands and test runs must not change what the real machine remembers.
     private static var leavesNoTrace: Bool {
         #if DEBUG
-        isHostingTests || isRunningAnErrand || SelfTest.isRequested || SelfTest.isLoopbackRequested || SelfTest.isTouchRequested
+        isHostingTests || isRunningAnErrand || SelfTest.isRequested || SelfTest.isLoopbackRequested || SelfTest.isTouchRequested || SelfTest.isMixdownRequested
         #else
         isHostingTests
         #endif
@@ -61,6 +61,10 @@ struct X2026App: App {
                         #endif
                         machine.powerOn()
                         #if DEBUG
+                        if SelfTest.isMixdownRequested {
+                            await SelfTest.runMixdown(machine: machine, desk: desk)
+                            NSApplication.shared.terminate(nil)
+                        }
                         if SelfTest.isTouchRequested {
                             await SelfTest.runTouch(machine: machine, desk: desk)
                             NSApplication.shared.terminate(nil)

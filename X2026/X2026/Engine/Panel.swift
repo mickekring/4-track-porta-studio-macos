@@ -100,8 +100,13 @@ nonisolated struct Panel: Sendable, Equatable, Codable {
     var recordR = RecordSelect.off
     var metersShowMixer = false
 
-    /// How it looks when somebody has just finished a mix and left it:
-    /// everything you need to hear a tape the moment you press PLAY.
+    /// How it comes out of the box: everything you need to hear a tape the
+    /// moment you press PLAY — the four tracks spread across the sub mix and
+    /// the headphones on LINE + SUB MIX.
+    ///
+    /// It is in NORM on purpose. In REMIX with the sub mix up, arming a track
+    /// routes its output straight back to its own input: the howl the manual
+    /// warns about. Switch to REMIX to bounce or mix down, as the manual says.
     static let readyToPlay: Panel = {
         var panel = Panel()
         panel.fader1 = 0.7
@@ -111,7 +116,7 @@ nonisolated struct Panel: Sendable, Equatable, Codable {
         panel.master = 0.75
         panel.monitorLevel = 0.45
         panel.auxSend = 0.5
-        panel.remix = true
+        panel.remix = false
         panel.monitor = .lineAndSubMix
         return panel
     }()
@@ -158,6 +163,11 @@ nonisolated struct ControlFrame: Sendable {
     /// Round-trip delay of the computer's audio hardware in output samples.
     /// Overdubs are written this much earlier on the tape so they line up.
     var recordLatency = 0
+    /// Bit n set: input jack n is fed from inside the Mac (the rhythm box),
+    /// so it makes no round trip and must not be compensated for one.
+    var internalJacks: UInt8 = 0
+    /// Recording is refused for a reason outside the machine (the disk is full).
+    var recordInhibit = false
 }
 
 /// Colour of the arrow lamp under each meter.
@@ -186,4 +196,6 @@ nonisolated struct Telemetry: Sendable {
     /// Counts each time the mechanism stopped itself at the end of the tape.
     var autoStopCount: UInt32 = 0
     var isRecording = false
+    /// Counts each time the signal path had to be cleared of non-numbers.
+    var fuseCount: UInt32 = 0
 }

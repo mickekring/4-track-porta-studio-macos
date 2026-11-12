@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import X2026
@@ -88,6 +89,18 @@ func decibels(_ ratio: Float) -> Float { 20 * log10(max(ratio, 1e-9)) }
 
 func sine(_ frequency: Double, amplitude: Float = Level.reference) -> (Int) -> Float {
     { index in amplitude * Float(sin(2 * Double.pi * frequency * Double(index) / Rig.sampleRate)) }
+}
+
+/// Amplitude of the `target` Hz component of `samples`.
+func component(_ target: Double, in samples: [Float], sampleRate: Double = Rig.sampleRate) -> Float {
+    var real = 0.0
+    var imaginary = 0.0
+    for (index, sample) in samples.enumerated() {
+        let phase = 2 * Double.pi * target * Double(index) / sampleRate
+        real += Double(sample) * cos(phase)
+        imaginary += Double(sample) * sin(phase)
+    }
+    return Float(2 * (real * real + imaginary * imaginary).squareRoot() / Double(max(1, samples.count)))
 }
 
 /// Frequency estimated from upward zero crossings.
@@ -281,7 +294,22 @@ struct RecorderTests {
         let steady = Array(played[48_000..<(48_000 * 2)])
         #expect(abs(decibels(rms(steady) / (Level.reference * 0.7071))) < 2)
         #expect(abs(frequency(of: steady) - 1000) < 4)
-        // Panned hard left: nothing but hiss on the right.
+    }
+
+    @Test("A track panned hard left leaves the right side with nothing but hiss")
+    func panning() throws {
+        let rig = try Rig()
+        let start = rig.oxideFrame
+        for offset in 0..<96_000 {
+            rig.medium.write(track: 0, frame: start + offset, value: Level.reference * Float(sin(2 * Double.pi * 1000 * Double(offset) / 48_000)))
+        }
+        mixdown(rig)
+        rig.controls.transport = TransportRequest(motion: .play)
+        let out = rig.run(seconds: 1.5)
+        let left = component(1000, in: Array(out.left[24_000...]))
+        let right = component(1000, in: Array(out.right[24_000...]))
+        #expect(left > Level.reference * 0.6)
+        #expect(right < left * 0.01)
     }
 
     @Test("RECORD with no track armed just plays, and the tape is untouched")
@@ -309,15 +337,40 @@ struct RecorderTests {
         #expect(rms(rig.tape(track: 0, from: start, count: 40_000)) == 0)
     }
 
-    @Test("Nothing records on the leader")
+    @Test("Nothing records on the leader; the take begins where the oxide does")
     func leader() throws {
-        let rig = try Rig(secondsIntoTape: -3)
+        let rig = try Rig(secondsIntoTape: -1)
+        armTrackOne(rig)
+        rig.controls.panel.noiseReduction = false
+        rig.controls.transport = TransportRequest(motion: .play, recordKey: true)
+        rig.run(seconds: 2.5, signal: sine(440))
+        #expect(rig.oxideFrame > 48_000)
+        // The second of tone played over the leader is simply gone, and the
+        // oxide carries tone from its very first frames on.
+        let opening = rig.tape(track: 0, from: 0, count: 2400)
+        #expect(rms(opening) > Level.reference * 0.3)
+        let later = rig.tape(track: 0, from: 24_000, count: 24_000)
+        #expect(abs(decibels(rms(later) / (Level.reference * 0.7071))) < 1.5)
+        // Nothing strays onto other tracks or far beyond the head.
+        #expect(rms(rig.tape(track: 1, from: 0, count: 96_000)) == 0)
+        #expect(rms(rig.tape(track: 0, from: rig.oxideFrame + 24_000, count: 48_000)) == 0)
+    }
+
+    @Test("At the far end the tape simply runs out")
+    func trailer() throws {
+        let rig = try Rig(stock: .c46)
+        rig.core.eject()
+        let frames = TapeStock.c46.frameCount
+        rig.core.insert(
+            medium: rig.medium, stock: .c46,
+            position: rig.leader + Double(frames) - 48_000, recordProtected: false)
         armTrackOne(rig)
         rig.controls.transport = TransportRequest(motion: .play, recordKey: true)
-        rig.run(seconds: 2, signal: sine(440))
-        // Still a second short of the oxide: the file has not been touched.
-        #expect(rig.oxideFrame < 0)
-        #expect(rms(rig.tape(track: 0, from: 0, count: 48_000)) == 0)
+        rig.run(seconds: 8, signal: sine(440))
+        // Recorded up to the last frame of oxide, then auto-stop on the leader.
+        #expect(rms(rig.tape(track: 0, from: frames - 24_000, count: 24_000)) > Level.reference * 0.3)
+        #expect(rig.telemetry.motion == .stop)
+        #expect(rig.telemetry.autoStopCount == 1)
     }
 
     @Test("Lamps: amber when armed and stopped, green in play, red when recording")
@@ -387,12 +440,17 @@ struct RecorderTests {
         let gap = Int(CassetteStandard.eraseToRecordGap * CassetteStandard.framesPerMeter)
         let bed = rms(rig.tape(track: 0, from: start + 24_000, count: 12_000))
 
-        // Just after the punch-in the old tone is still under the new one…
+        // Just after the punch-in the old 300 Hz is still there under the new
+        // tone, knocked down by the record bias to roughly a fifth…
         let overlap = rig.tape(track: 0, from: punchIn + 2000, count: gap - 4000)
+        let old = component(300, in: overlap)
+        let bedLevel = component(300, in: rig.tape(track: 0, from: start + 24_000, count: gap - 4000))
+        #expect(old > bedLevel * 0.1 && old < bedLevel * 0.3, "old take at \(old / bedLevel) of its level")
+        #expect(component(2000, in: overlap) > Level.reference * 0.5)
         // …and once the erased tape arrives, only the new one is left.
         let clean = rig.tape(track: 0, from: punchIn + gap + 2000, count: 12_000)
         #expect(abs(frequency(of: clean) - 2000) < 20)
-        #expect(rms(overlap) > rms(clean) * 1.005)
+        #expect(component(300, in: clean) < bedLevel * 0.005)
 
         // After the punch-out: a quarter of a second of nothing, then the bed again.
         let silence = rig.tape(track: 0, from: punchOut + 1500, count: gap - 3000)
@@ -466,6 +524,208 @@ struct RecorderTests {
         let written = rig.tape(track: 0, from: mark - 500, count: 1500)
         let peak = written.indices.max { abs(written[$0]) < abs(written[$1]) }!
         #expect(abs((mark - 500 + peak) - (mark + 12)) < 30)
+    }
+
+    @Test("The rhythm box makes no trip through the audio hardware and is not compensated for one")
+    func internalSourcesAreNotShifted() throws {
+        let latency = 960
+        let rig = try Rig()
+        rig.controls.recordLatency = latency
+        rig.controls.internalJacks = 0b01
+        armTrackOne(rig)
+        rig.controls.panel.noiseReduction = false
+        rig.controls.transport = TransportRequest(motion: .play, recordKey: true)
+        rig.run(seconds: 1)
+        let mark = rig.oxideFrame
+        var clock = 0
+        // A drum hit generated exactly as the head passes `mark` belongs at `mark`.
+        rig.run(seconds: 1) { _ in
+            defer { clock += 1 }
+            return clock < 24 ? 0.5 : 0
+        }
+        let written = rig.tape(track: 0, from: mark - 2000, count: 4000)
+        let peak = written.indices.max { abs(written[$0]) < abs(written[$1]) }!
+        #expect(abs((mark - 2000 + peak) - (mark + 12)) < 30, "landed \(mark - 2000 + peak - mark) frames from where it was played")
+    }
+
+    @Test("Reverb on a bounce lands with its dry signal, not ahead of it")
+    func bouncedReverbIsAligned() throws {
+        var landed: [Int] = []
+        for latency in [0, 900] {
+            let rig = try Rig()
+            rig.controls.recordLatency = latency
+            let click = rig.oxideFrame + 48_000
+            for offset in 0..<24 { rig.medium.write(track: 0, frame: click + offset, value: 0.6) }
+            // Track 1 → AUX only → echo → AUX RCV R → track 2. No dry path at all,
+            // so whatever lands on track 2 is the effect's own timing.
+            rig.controls.panel = Panel()
+            rig.controls.panel.noiseReduction = false
+            rig.controls.panel.aux[0] = 1
+            rig.controls.panel.auxSend = 0.6
+            rig.controls.panel.auxReturnR = 0.6
+            rig.controls.panel.master = 0.75
+            rig.controls.panel.recordR = .upper
+            rig.controls.effect = AuxEffect.Settings(connected: true, mode: .echo, size: 0, colour: 0)
+            rig.controls.transport = TransportRequest(motion: .play, recordKey: true)
+            rig.run(seconds: 2)
+            let copy = rig.tape(track: 1, from: click, count: 12_000)
+            let loudest = copy.map(abs).max() ?? 0
+            #expect(loudest > 0.01)
+            landed.append(copy.firstIndex { abs($0) > loudest * 0.5 } ?? -1)
+        }
+        // The single echo (70 ms) arrives the same distance after the click
+        // whether or not the audio hardware's round trip is being compensated.
+        #expect(abs(landed[0] - landed[1]) < 24, "echo at \(landed[0]) frames without latency, \(landed[1]) with")
+        #expect(abs(landed[0] - 3360) < 200)
+    }
+
+    @Test("At 44.1 kHz the tape still runs at 1⅞ ips and pitch is kept")
+    func otherSampleRate() throws {
+        let rate = 44_100.0
+        let url = FileManager.default.temporaryDirectory.appending(path: "x2026-44k-\(UUID().uuidString).pcm")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let stock = TapeStock.c46
+        let medium = try TapeMedium(url: url, frameCount: stock.frameCount)
+        let core = MachineCore()
+        core.prepare(sampleRate: rate)
+        let leader = stock.leaderLength * CassetteStandard.framesPerMeter
+        let start = leader + 2 * CassetteStandard.sampleRate
+        let left = UnsafeMutablePointer<Float>.allocate(capacity: 441)
+        let right = UnsafeMutablePointer<Float>.allocate(capacity: 441)
+        defer {
+            left.deallocate()
+            right.deallocate()
+        }
+        var clock = 0
+        func run(seconds: Double, controls: ControlFrame, tone: Bool) -> [Float] {
+            var out: [Float] = []
+            core.controls.post(controls)
+            for _ in 0..<Int(seconds * 100) {
+                for frame in 0..<441 {
+                    core.jacks[frame] = tone ? Level.reference * Float(sin(2 * Double.pi * 1000 * Double(clock + frame) / rate)) : 0
+                }
+                core.render(frames: 441, left: left, right: right)
+                out.append(contentsOf: UnsafeBufferPointer(start: left, count: 441))
+                clock += 441
+            }
+            return out
+        }
+
+        core.insert(medium: medium, stock: stock, position: start, recordProtected: false)
+        var controls = ControlFrame()
+        controls.mechanicalLevel = 0
+        controls.panel = Panel()
+        controls.panel.fader1 = 0.75
+        controls.panel.pan1 = 0
+        controls.panel.master = 0.75
+        controls.panel.recordL = .upper
+        controls.transport = TransportRequest(motion: .play, recordKey: true)
+        _ = run(seconds: 3, controls: controls, tone: true)
+        // Three seconds of machine time is three seconds of tape, whatever the device rate.
+        #expect(abs((core.tapePosition - start) / CassetteStandard.sampleRate - 3) < 0.15)
+
+        core.eject()
+        core.insert(medium: medium, stock: stock, position: start, recordProtected: false)
+        controls.panel = Panel()
+        controls.panel.subGain[0] = 0.8
+        controls.panel.subPan[0] = 0
+        controls.panel.remix = true
+        controls.panel.master = 0.75
+        controls.panel.monitorLevel = 0.45
+        controls.transport = TransportRequest(motion: .play)
+        let played = run(seconds: 2.5, controls: controls, tone: false)
+        let steady = Array(played[44_100..<88_200])
+        #expect(abs(frequency(of: steady, sampleRate: rate) - 1000) < 4)
+        #expect(abs(decibels(rms(steady) / (Level.reference * 0.7071))) < 2)
+    }
+}
+
+// MARK: - Hosting
+
+@Suite("Audio host")
+struct AudioHostTests {
+    @Test("When the input stops, the jacks go quiet instead of looping the last scraps")
+    func ringGoesQuiet() {
+        let ring = InputRing()
+        ring.configure(channels: 1, inputRate: 48_000, outputRate: 48_000, targetFill: 256)
+        let list = AudioBufferList.allocate(maximumBuffers: 1)
+        let samples = UnsafeMutablePointer<Float>.allocate(capacity: 128)
+        samples.initialize(repeating: 0.5, count: 128)
+        list[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: 128 * 4, mData: samples)
+        let out = UnsafeMutablePointer<Float>.allocate(capacity: InputRing.maximumChannels * 128)
+        defer {
+            samples.deallocate()
+            out.deallocate()
+            free(list.unsafeMutablePointer)
+        }
+        func block(writing: Bool) -> Float {
+            if writing { ring.write(list.unsafePointer, frames: 128) }
+            ring.read(into: out, stride: 128, frames: 128)
+            return (0..<128).map { abs(out[$0]) }.max() ?? 0
+        }
+
+        var flowing: Float = 0
+        for _ in 0..<20 { flowing = block(writing: true) }
+        #expect(flowing == 0.5)
+
+        // The input device goes away: after the reserve has drained, silence.
+        var heard: Float = 0
+        for index in 0..<200 {
+            let level = block(writing: false)
+            if index >= 4 { heard = max(heard, level) }
+        }
+        #expect(heard == 0)
+
+        // It comes back: audio flows again.
+        for _ in 0..<20 { flowing = block(writing: true) }
+        #expect(flowing == 0.5)
+    }
+
+    @Test("The master recorder writes what it was fed, at the right length")
+    func masterRecorder() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "x2026-master-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let recorder = MasterRecorder()
+        recorder.sampleRate = 48_000
+        let left = UnsafeMutablePointer<Float>.allocate(capacity: 480)
+        let right = UnsafeMutablePointer<Float>.allocate(capacity: 480)
+        defer {
+            left.deallocate()
+            right.deallocate()
+        }
+        // Nothing is kept before REC is pressed.
+        left.initialize(repeating: 0.25, count: 480)
+        right.initialize(repeating: -0.25, count: 480)
+        recorder.capture(left: left, right: right, frames: 480)
+        #expect(!recorder.isRecording)
+        #expect(abs(recorder.levels.left - 1) < 0.01)
+
+        try recorder.begin(url: url)
+        var clock = 0
+        for _ in 0..<150 {
+            for frame in 0..<480 {
+                left[frame] = Level.reference * Float(sin(2 * Double.pi * 440 * Double(clock + frame) / 48_000))
+                right[frame] = 0
+            }
+            recorder.capture(left: left, right: right, frames: 480)
+            clock += 480
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        #expect(abs(recorder.elapsed - 1.5) < 0.001)
+        let finished = try #require(recorder.end())
+        #expect(!recorder.isRecording)
+
+        let file = try AVAudioFile(forReading: finished)
+        #expect(file.length == 72_000)
+        #expect(file.fileFormat.sampleRate == 48_000)
+        #expect(file.fileFormat.channelCount == 2)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 72_000))
+        try file.read(into: buffer)
+        let channels = try #require(buffer.floatChannelData)
+        let recorded = Array(UnsafeBufferPointer(start: channels[0], count: 72_000))
+        // The 0 mark is lifted to about -6 dBFS on the way to the file.
+        #expect(abs(component(440, in: recorded) - Level.reference * 2) < 0.01)
+        #expect(Array(UnsafeBufferPointer(start: channels[1], count: 72_000)).allSatisfy { $0 == 0 })
     }
 }
 
@@ -552,7 +812,7 @@ struct SoundTests {
         #expect(peak > 0.5)
     }
 
-    @Test("An armed track routed back to its own buss howls, but stays finite and within the rails")
+    @Test("An armed track routed back to its own buss howls, stays bounded, and recovers")
     func feedbackIsBounded() throws {
         let rig = try Rig()
         rig.controls.panel = Panel()
@@ -567,44 +827,107 @@ struct SoundTests {
         rig.controls.panel.eqLowL = 1
         rig.controls.panel.fader1 = 0.75
         rig.controls.panel.pan1 = 0
+        rig.controls.panel.metersShowMixer = true
         rig.controls.panel.monitor = .lineAndSubMix
-        rig.controls.panel.monitorLevel = 1
-        var loudest: Float = 0
+        rig.controls.panel.monitorLevel = 0.45
         for transport in [TransportRequest(), TransportRequest(motion: .play, recordKey: true), TransportRequest()] {
             rig.controls.transport = transport
-            let out = rig.run(seconds: 1.5, signal: sine(700, amplitude: 0.05)).left
-            #expect(out.allSatisfy { $0.isFinite })
-            loudest = max(loudest, out.map(abs).max() ?? 0)
+            var loudest: Float = 0
+            for _ in 0..<15 {
+                rig.run(seconds: 0.1, signal: sine(700, amplitude: 0.02))
+                // The meter is fed before any limiter, so it shows the loop itself.
+                let meter = rig.telemetry.meters[0]
+                #expect(meter.isFinite)
+                loudest = max(loudest, meter)
+            }
+            // It howls: far above the -22 dB that was fed in…
+            #expect(loudest > 2, "loop only reached \(loudest)")
+            // …and stops at the rails: 1.3, doubled at worst by the output
+            // coupling, times MASTER flat out, over the 0.25 reference.
+            #expect(loudest < 22)
         }
-        // The headphone amp runs out of volts at full scale (give or take a rounding error).
-        #expect(loudest <= 1.0001)
-        // And it recovers once the loop is broken.
-        rig.controls.panel.subGain[0] = 0.5
-        rig.controls.panel.recordL = .off
-        rig.run(seconds: 0.5)
-        let after = rig.run(seconds: 0.5).left
-        #expect(after.allSatisfy { $0.isFinite })
-        #expect(rms(after) < 0.01)
+        #expect(rig.telemetry.fuseCount == 0)
+
+        // Break the loop: a reference tone goes through as if nothing had happened.
+        rig.controls.panel = Panel()
+        rig.controls.panel.fader1 = 0.75
+        rig.controls.panel.pan1 = 0
+        rig.controls.panel.master = 0.75
+        rig.controls.panel.monitor = .lineAndSubMix
+        rig.controls.panel.monitorLevel = 0.45
+        rig.run(seconds: 1, signal: sine(1000))
+        let after = rig.run(seconds: 0.5, signal: sine(1000)).left
+        #expect(abs(decibels(component(1000, in: after) / Level.reference)) < 1)
+        #expect(rig.telemetry.fuseCount == 0)
+    }
+
+    @Test("The reverb survives the sample rate dropping under it")
+    func effectSurvivesRateChange() {
+        for mode in AuxEffect.Mode.allCases {
+            var effect = AuxEffect()
+            defer { effect.release() }
+            let settings = AuxEffect.Settings(connected: true, mode: mode, size: 1, colour: 0.9)
+            effect.prepare(sampleRate: 96_000)
+            effect.apply(settings)
+            // Run long enough for every cursor to be deep into its buffer.
+            for index in 0..<150_000 { _ = effect.process(index % 9000 == 0 ? 0.5 : 0) }
+            // Now the device drops to a quarter of the rate: every buffer shrinks.
+            effect.prepare(sampleRate: 24_000)
+            effect.apply(settings)
+            var peak: Float = 0
+            for index in 0..<60_000 {
+                let wet = effect.process(index == 0 ? 0.5 : 0)
+                #expect(wet.left.isFinite && wet.right.isFinite)
+                peak = max(peak, abs(wet.left), abs(wet.right))
+            }
+            #expect(peak > 0.001, "\(mode) is silent after the rate change")
+            #expect(peak < 2)
+        }
+    }
+
+    @Test("Switching the reverb off and on again does not replay an old tail")
+    func effectStartsClean() {
+        var effect = AuxEffect()
+        defer { effect.release() }
+        effect.prepare(sampleRate: 48_000)
+        var settings = AuxEffect.Settings(connected: true, mode: .reverb, size: 1, colour: 0.5)
+        effect.apply(settings)
+        for _ in 0..<4800 { _ = effect.process(0.5) }
+        settings.connected = false
+        effect.apply(settings)
+        for _ in 0..<480 { _ = effect.process(0) }
+        settings.connected = true
+        effect.apply(settings)
+        var residue: Float = 0
+        for _ in 0..<48_000 { residue = max(residue, abs(effect.process(0).left)) }
+        #expect(residue == 0)
     }
 
     @Test("The core runs comfortably faster than real time")
     func performance() throws {
         let rig = try Rig()
         rig.controls.panel = .readyToPlay
+        rig.controls.panel.remix = true
         rig.controls.panel.recordL = .upper
         rig.controls.panel.recordR = .upper
         rig.controls.effect.connected = true
         rig.controls.panel.auxSend = 0.6
         rig.controls.panel.aux = Quad(repeating: 0.8)
         rig.controls.transport = TransportRequest(motion: .play, recordKey: true)
-        let clock = ContinuousClock()
-        let seconds = 10.0
-        let elapsed = clock.measure {
-            rig.run(seconds: seconds, signal: sine(440))
+        // Thread CPU time, not wall time: the other tests run alongside this
+        // one and would otherwise decide the result.
+        func cpuSeconds() -> Double {
+            var time = timespec()
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time)
+            return Double(time.tv_sec) + Double(time.tv_nsec) / 1e9
         }
-        let factor = seconds / (Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) * 1e-18)
+        let seconds = 10.0
+        let before = cpuSeconds()
+        rig.run(seconds: seconds, signal: sine(440))
+        let factor = seconds / (cpuSeconds() - before)
         print("X-2026 core: \(String(format: "%.1f", factor))× real time, worst case, this build configuration")
-        #expect(factor > 3)
+        // A floor for unoptimised builds; an optimised build manages several times this.
+        #expect(factor > 2)
     }
 }
 
@@ -660,11 +983,45 @@ struct MachineTests {
     }
 }
 
+// MARK: - Out of the box
+
+@Suite("Factory panel")
+struct FactoryPanelTests {
+    @Test("Out of the box, PLAY is all it takes to hear a tape, and arming a track is safe")
+    func readyToPlay() throws {
+        let rig = try Rig()
+        let start = rig.oxideFrame
+        for offset in 0..<144_000 {
+            rig.medium.write(track: 0, frame: start + offset, value: Level.reference * Float(sin(2 * Double.pi * 500 * Double(offset) / 48_000)))
+        }
+        rig.controls.panel = .readyToPlay
+        rig.controls.transport = TransportRequest(motion: .play)
+        let playing = rig.run(seconds: 1.5)
+        #expect(component(500, in: Array(playing.left[36_000...])) > Level.reference * 0.5)
+
+        // Now arm track 1 and stop, with something plugged into input 1. In
+        // REMIX this panel would feed the track back into itself at a loop
+        // gain a hair under one; in NORM the input is simply passed through.
+        rig.controls.panel.recordL = .upper
+        rig.controls.panel.pan1 = 0
+        rig.controls.panel.metersShowMixer = true
+        rig.controls.transport = TransportRequest()
+        rig.run(seconds: 1, signal: sine(100, amplitude: 0.05))
+        var loudest: Float = 0
+        for _ in 0..<10 {
+            rig.run(seconds: 0.1, signal: sine(100, amplitude: 0.05))
+            loudest = max(loudest, rig.telemetry.meters[0])
+        }
+        // 0.05 in, at unity or thereabouts: about a fifth of the 0 mark, not forty times it.
+        #expect(loudest < 0.4, "LINE L reads \(loudest) of the 0 mark")
+    }
+}
+
 // MARK: - Demo tape
 
 @Suite("Demo tape")
 struct DemoTapeTests {
-    @Test("The demo records four tracks of music, in time with each other")
+    @Test("The demo records four tracks of music at sensible levels, and its count-in is drums alone")
     func demo() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: "x2026-demo-\(UUID().uuidString).pcm")
         defer { try? FileManager.default.removeItem(at: url) }

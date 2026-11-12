@@ -83,12 +83,18 @@ nonisolated struct AuxEffect {
         self.combs = combs
         self.allpasses = allpasses
 
-        echoLength = Int(sampleRate * 1.2)
+        echoLength = max(64, Int(sampleRate * 1.2))
         echo = .allocate(capacity: echoLength)
         echo?.initialize(repeating: 0, count: echoLength)
-        preDelayLength = Int(sampleRate * 0.018)
+        preDelayLength = max(8, Int(sampleRate * 0.018))
         preDelay = .allocate(capacity: preDelayLength)
         preDelay?.initialize(repeating: 0, count: preDelayLength)
+        // The buffers are new and may be shorter: every cursor into them
+        // starts again, and the echo time is brought back inside its line.
+        echoIndex = 0
+        preDelayIndex = 0
+        echoDelay = min(echoDelay, Double(echoLength - 4))
+        echoDelaySmoothed = echoDelay
 
         lowCut.setCutoff(140, sampleRate: sampleRate)
         topL.setCutoff(9000, sampleRate: sampleRate)
@@ -128,6 +134,7 @@ nonisolated struct AuxEffect {
         }
         echo?.update(repeating: 0, count: echoLength)
         preDelay?.update(repeating: 0, count: preDelayLength)
+        echoDelaySmoothed = echoDelay
         lowCut = DCBlocker()
         lowCut.setCutoff(140, sampleRate: sampleRate)
         topL.value = 0
@@ -137,14 +144,19 @@ nonisolated struct AuxEffect {
 
     /// Takes new knob positions. Cheap enough for the top of every block.
     mutating func apply(_ settings: Settings) {
-        connected = settings.connected
-        mode = settings.mode
         let size = Float(min(1, max(0, settings.size)))
         let colour = Float(min(1, max(0, settings.colour)))
         feedback = 0.70 + 0.28 * size
         damping = 0.75 - 0.65 * colour
-        echoDelay = sampleRate * (0.07 + 0.63 * Double(size))
+        echoDelay = min(sampleRate * (0.07 + 0.63 * Double(size)), Double(max(8, echoLength - 4)))
         echoFeedback = 0.82 * colour
+        // Switching it on, or to the other programme, starts from silence
+        // rather than replaying whatever was left in the delay lines.
+        if settings.connected != connected || settings.mode != mode {
+            clear()
+        }
+        connected = settings.connected
+        mode = settings.mode
     }
 
     /// One sample of AUX SEND in, a stereo return out.
@@ -176,9 +188,9 @@ nonisolated struct AuxEffect {
         case .echo:
             // Glide to a new delay time like a tape echo changing speed.
             echoDelaySmoothed += (echoDelay - echoDelaySmoothed) * 0.0004
-            var readAt = Double(echoIndex) - echoDelaySmoothed
+            var readAt = (Double(echoIndex) - echoDelaySmoothed).truncatingRemainder(dividingBy: Double(echoLength))
             if readAt < 0 { readAt += Double(echoLength) }
-            let whole = Int(readAt)
+            let whole = min(echoLength - 1, Int(readAt))
             let fraction = Float(readAt - Double(whole))
             let a = echo[whole % echoLength]
             let b = echo[(whole + 1) % echoLength]

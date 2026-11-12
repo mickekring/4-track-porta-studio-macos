@@ -38,6 +38,35 @@ nonisolated final class RhythmBox: @unchecked Sendable {
         Pattern(name: "MARCH", kick: 0b1000_1000_1000_1000, snare: 0b1011_1010_1011_1011, hat: 0, openHat: 0, bell: 0),
     ]
 
+    /// The patterns as plain bit masks, copied once so the audio thread
+    /// never touches the lazily initialised global above or its strings.
+    private struct Steps {
+        var kick: UInt16
+        var snare: UInt16
+        var hat: UInt16
+        var openHat: UInt16
+        var bell: UInt16
+        var shuffle: Bool
+    }
+
+    private let steps: UnsafeMutablePointer<Steps>
+    private let patternCount: Int
+
+    init() {
+        let all = Self.patterns
+        patternCount = all.count
+        steps = .allocate(capacity: all.count)
+        for (index, pattern) in all.enumerated() {
+            (steps + index).initialize(to: Steps(
+                kick: pattern.kick, snare: pattern.snare, hat: pattern.hat,
+                openHat: pattern.openHat, bell: pattern.bell, shuffle: pattern.shuffle))
+        }
+    }
+
+    deinit {
+        steps.deallocate()
+    }
+
     let settings = Mailbox(Settings())
     /// Step last played (0…15), for the blinking lamp.
     let step = Atomic<Int>(0)
@@ -93,7 +122,7 @@ nonisolated final class RhythmBox: @unchecked Sendable {
         bellFilter.setPeak(frequency: 2600, q: 2.5, gainDB: 9, sampleRate: sampleRate)
     }
 
-    private func strike(_ pattern: Pattern, step: Int) {
+    private func strike(_ pattern: Steps, step: Int) {
         let bit: UInt16 = 0x8000 >> UInt16(step)
         if pattern.kick & bit != 0 {
             kickLevel = 1
@@ -120,7 +149,7 @@ nonisolated final class RhythmBox: @unchecked Sendable {
     /// Audio thread: `frames` of mono line-level output.
     func render(into output: UnsafeMutablePointer<Float>, frames: Int) {
         if let fresh = settings.read() { current = fresh }
-        let pattern = Self.patterns[min(Self.patterns.count - 1, max(0, current.pattern))]
+        let pattern = steps[min(patternCount - 1, max(0, current.pattern))]
         let stepLength = sampleRate * 60 / max(40, min(240, current.tempo)) / 4
         gain.aim(Float(current.volume * current.volume) * 0.55, frames: frames)
 

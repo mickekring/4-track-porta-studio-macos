@@ -107,7 +107,12 @@ MIXER: L, R, (dark), AUX SEND. Under them, four tri-colour arrows (p.8):
 - The name and logo. The machine is a Brustex X-2026; "brus" is Swedish for
   hiss. No Fostex or Dolby names or marks appear in the app.
 - Overdubs are shifted to cancel the Mac's audio round trip
-  (`ControlFrame.recordLatency`), while tape-to-tape bounces stay aligned.
+  (`ControlFrame.recordLatency`). Signal that never makes that trip — tape
+  tracks, the rhythm box — is held back by the same amount on its way to the
+  record head, so bounces stay aligned; the effects box has a twin on the
+  tape path for the same reason. See "Live and late" in `MachineDSP.render`.
+- The factory panel is in NORM, so that arming a track does not put it in the
+  feedback loop described above.
 - The rhythm box, reverb, master recorder and foot switch on the desk are
   generic stand-ins for the gear the manual tells you to plug in.
 

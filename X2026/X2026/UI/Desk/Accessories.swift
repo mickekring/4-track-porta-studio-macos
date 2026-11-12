@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import Synchronization
 import UniformTypeIdentifiers
@@ -344,6 +345,11 @@ struct MasterRecorderView: View {
         }
         .frame(width: size.width * unit, height: size.height * unit, alignment: .topLeading)
         .shadow(color: .black.opacity(0.5), radius: 4 * unit, x: 2 * unit, y: 4 * unit)
+        // The recorder can stop without being told to (the audio hardware
+        // changed sample rate): keep the lamp honest.
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            if recording != recorder.isRecording { recording = recorder.isRecording }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Master recorder")
     }

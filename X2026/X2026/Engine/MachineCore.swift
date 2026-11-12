@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Synchronization
 
 /// The machine's electronics and mechanism, safely shared between the audio
 /// thread (which runs it) and the main thread (which works its controls).
@@ -17,6 +18,9 @@ nonisolated final class MachineCore: @unchecked Sendable {
     private let dsp: UnsafeMutablePointer<MachineDSP>
     private let current: UnsafeMutablePointer<ControlFrame>
     private let lock: os_unfair_lock_t
+    /// The tape position as a bit pattern, so the main thread can read it
+    /// without touching the lock the audio thread is trying for.
+    private let positionBits = Atomic<UInt64>(0)
 
     static let maximumFrames = MachineDSP.maximumFrames
 
@@ -66,6 +70,7 @@ nonisolated final class MachineCore: @unchecked Sendable {
             // Holding the lock makes us the only writer for a moment, so the
             // main thread may report on the audio thread's behalf.
             telemetry.post($0.idleReport())
+            positionBits.store($0.deck.position.bitPattern, ordering: .relaxed)
         }
     }
 
@@ -75,12 +80,15 @@ nonisolated final class MachineCore: @unchecked Sendable {
         locked {
             let position = $0.unload()
             telemetry.post($0.idleReport())
+            positionBits.store(position.bitPattern, ordering: .relaxed)
             return position
         }
     }
 
-    /// Where the tape is right now, without waiting for the next audio block.
-    var tapePosition: Double { locked { $0.deck.position } }
+    /// Where the tape was at the end of the last audio block. Lock-free: the
+    /// lock is kept for changing tapes and sample rates only, because every
+    /// time the main thread holds it the audio thread may have to skip a block.
+    var tapePosition: Double { Double(bitPattern: positionBits.load(ordering: .relaxed)) }
 
     // MARK: - Audio thread
 
@@ -94,14 +102,17 @@ nonisolated final class MachineCore: @unchecked Sendable {
     /// Runs the machine for up to `maximumFrames` samples.
     func render(frames: Int, left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>) {
         guard os_unfair_lock_trylock(lock) else {
+            // A tape is being changed: one block of silence, on LINE OUT too.
             left.update(repeating: 0, count: frames)
             right.update(repeating: 0, count: frames)
+            dsp.pointee.lineOut.update(repeating: 0, count: 2 * Self.maximumFrames)
             return
         }
         defer { os_unfair_lock_unlock(lock) }
         if let fresh = controls.read() { current.pointee = fresh }
         while let sound = sounds.pop() { dsp.pointee.trigger(sound) }
         let report = dsp.pointee.render(frames: frames, left: left, right: right, controls: current.pointee)
+        positionBits.store(report.position.bitPattern, ordering: .relaxed)
         telemetry.post(report)
     }
 }

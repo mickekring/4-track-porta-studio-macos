@@ -51,7 +51,11 @@ so this plan was written and then executed without stopping.
 
 ## Not done / ideas
 
-- [ ] Choose input and output devices in Settings (uses the system defaults today)
+- [x] Choose input and output devices in Settings
+- [ ] Audio thread reads and writes the memory-mapped tape directly. Works, but a
+      RAM window filled by a background queue would rule out page-fault stalls
+      and a crash if the disk fills during a take.
+- [ ] Stress run of the engine under Thread Sanitizer and Address Sanitizer
 - [ ] Wrong-tape behaviour: a Type I cassette on a Type II machine should sound dull
 - [ ] "Condition" setting: mint / well loved / barn find (flutter, hiss, motor bleed, dropouts)
 - [ ] Drop an audio file on an input jack as a line source that plays in real time
@@ -103,5 +107,34 @@ Bugs found on the way:
 - Bare-letter menu shortcuts would have swallowed typing in the label editor;
   the desk view now handles transport keys itself while it has focus.
 
-Engine speed, worst case (two tracks recording, four playing, reverb on):
-3.6× real time in Debug, 16× in Release.
+Engine speed, worst case (two tracks recording, four playing, reverb on),
+measured as thread CPU time with the test running alone: 4.3× real time in
+Debug, 89× in Release. (Earlier figures of 3.6× and 16× were taken while the
+other tests ran in parallel and were pessimistic.)
+
+### Independent review of the engine
+
+A second agent read the audio engine cold. What it found and what was done:
+
+| Finding | Outcome |
+|---|---|
+| Reverb kept stale buffer indices across a sample-rate change: out-of-bounds write on the audio thread | Fixed; test re-prepares at a quarter of the rate in both modes |
+| Head kept reading tape for ~3.7 s after leaving PLAY (float underflow of the capstan), faulting cold pages during a wind | Fixed: reads are gated on the pinch roller actually being engaged |
+| Tape was only paged in while moving; nothing warmed the spot it came to rest | Fixed: prefetch on stop and on PLAY/RECORD |
+| The whole tape was synced to disk at the instant of punch-out, under the head; eject synced while holding the audio lock | Fixed: sync is deferred until the heads are off, and never done under the lock |
+| Recording onto a full disk would crash (sparse file, SIGBUS) | Mitigated: RECORD is refused, with a notice, below 150 MB free. Not eliminated: a disk that fills *during* a take can still do it |
+| Rhythm box was latency-compensated as if it came through the audio interface, so a guitar recorded with it landed late | Fixed: sources inside the Mac are treated like tape; tested |
+| Reverb/echo on a bounce landed ahead of its dry signal when latency was being compensated | Fixed: the tape path has its own instance of the effect fed with correctly delayed signal; tested |
+| First frame of a take from stop was written at full bias; record path lacked the output coupling; stale state when latency appeared | Fixed |
+| Input ring replayed its last scraps for ever if the input device vanished | Fixed in the ring and on reconfigure; tested |
+| Reading the tape position took the lock the audio thread try-locks, so a knob move could cost a block of audio | Fixed: position is an atomic; the lock is for tape and sample-rate changes only |
+| Master recorder not closed on quit; kept recording at the wrong speed after a rate change | Fixed; tested |
+| The NaN fuse looked at clipped values and could never blow | Fixed: it watches the signal before any clipping, and counts |
+| Overdub offset depended on where the input ring happened to prime (± half a buffer) | Fixed: the age of the input is measured from callback times. Loopback: −0.3 ms, the same on every run |
+| Smaller: telemetry default on a collided read, old reverb tail on reconnect, muted clunks queueing up, clunks able to exceed full scale, a lazy global read on the audio thread | Fixed |
+| Tests: feedback test passed vacuously; leader test too weak; punch test compared RMS at a 1.6 % margin; claims without assertions; wall-clock performance threshold | Rewritten with real assertions (Goertzel for the punch overlap, meters for the howl, CPU time for speed) |
+| Factory panel in REMIX with the sub mix up put an armed track at loop gain 0.988 | Factory panel is now NORM; tested that PLAY still just works and arming is safe |
+
+Not done from the review: giving the audio thread a RAM window of tape instead
+of touching the memory-mapped file directly (the robust cure for page faults
+and for a disk filling mid-take), and a threaded stress run under TSan/ASan.

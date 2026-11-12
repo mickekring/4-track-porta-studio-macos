@@ -11,10 +11,13 @@ struct MeterLights: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
+            // Read the levels out here, not inside the Canvas: SwiftUI only
+            // redraws a Canvas when something it captured has changed.
+            let report = machine.telemetry
             Canvas { context, _ in
                 var scaled = context
                 scaled.scaleBy(x: unit, y: unit)
-                Self.draw(scaled, report: machine.telemetry)
+                Self.draw(scaled, report: report)
             }
         }
         .frame(width: Layout.size.width * unit, height: Layout.size.height * unit)
@@ -169,4 +172,19 @@ private struct KeyCap: View {
         }
         .animation(.snappy(duration: 0.07), value: isDown)
     }
+}
+
+#Preview("Meters") {
+    var report = Telemetry()
+    report.meters = Quad(2.2, 1.0, 0.33, 0.06)
+    report.lamps = Quad(TrackLamp.recording.rawValue, TrackLamp.standby.rawValue, TrackLamp.tape.rawValue, TrackLamp.tape.rawValue)
+    return Canvas { context, _ in
+        var scaled = context
+        scaled.scaleBy(x: 8, y: 8)
+        scaled.translateBy(x: -60, y: -76)
+        FaceplateArt.draw(scaled)
+        MeterLights.draw(scaled, report: report)
+    }
+    .frame(width: 60 * 8, height: 90 * 8)
+    .background(Theme.body)
 }

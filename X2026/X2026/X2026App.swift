@@ -123,26 +123,20 @@ struct MachineCommands: Commands {
                 .keyboardShortcut("?", modifiers: [.command])
         }
         CommandMenu("Transport") {
-            Button("Play") { tap(.play) }
-                .keyboardShortcut(.space, modifiers: [])
-            Button("Stop") { tap(.stop) }
-                .keyboardShortcut(.return, modifiers: [])
-            Button("Record") { tap(.record) }
-                .keyboardShortcut("r", modifiers: [])
-            Button("Rewind") { tap(.rewind) }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-            Button("Fast Forward") { tap(.fastForward) }
-                .keyboardShortcut(.rightArrow, modifiers: [])
+            // No key equivalents here on purpose: bare letters in the menu bar
+            // would swallow typing everywhere. The desk handles the keys itself.
+            Button("Play  (Space)") { tap(.play) }
+            Button("Stop  (Return)") { tap(.stop) }
+            Button("Record  (R)") { tap(.record) }
+            Button("Rewind  (←)") { tap(.rewind) }
+            Button("Fast Forward  (→)") { tap(.fastForward) }
             Divider()
-            Button("Step on the Foot Switch") { machine.stepOnFootSwitch() }
-                .keyboardShortcut("p", modifiers: [])
+            Button("Step on the Foot Switch  (P)") { machine.stepOnFootSwitch() }
                 .disabled(!machine.footSwitchConnected)
-            Button("Reset Counter") { machine.resetCounter() }
-                .keyboardShortcut("0", modifiers: [])
+            Button("Reset Counter  (0)") { machine.resetCounter() }
         }
         CommandGroup(before: .toolbar) {
-            Button(desk.leanedIn ? "Sit Back" : "Lean In") { desk.leanedIn.toggle() }
-                .keyboardShortcut("z", modifiers: [])
+            Button(desk.leanedIn ? "Sit Back  (Z)" : "Lean In  (Z)") { desk.leanedIn.toggle() }
             Divider()
         }
         CommandMenu("Tape") {

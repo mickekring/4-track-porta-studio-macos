@@ -99,25 +99,25 @@ nonisolated struct MechanicalSounds {
     mutating func trigger(_ sound: MechanicalSound) {
         switch sound {
         case .keyDown:
-            strike(noise: 0.20, band: 1700, q: 1.2, ring: 9, tone: 0.55, pitch: 118, sustain: 55)
+            strike(noise: 0.20, band: 1700, q: 1.2, ring: 9, tone: 0.30, pitch: 118, sustain: 55)
             strike(after: 19, noise: 0.13, band: 3300, q: 2.2, ring: 4)
         case .keyRelease:
-            strike(noise: 0.26, band: 2300, q: 1.0, ring: 7, tone: 0.32, pitch: 185, sustain: 32)
-            strike(after: 9, noise: 0.15, band: 1500, ring: 13, tone: 0.20, pitch: 96, sustain: 52)
+            strike(noise: 0.24, band: 2300, q: 1.0, ring: 7, tone: 0.20, pitch: 185, sustain: 32)
+            strike(after: 9, noise: 0.15, band: 1500, ring: 13, tone: 0.14, pitch: 96, sustain: 52)
         case .stopKey:
-            strike(noise: 0.11, band: 1200, ring: 10, tone: 0.30, pitch: 102, sustain: 45)
+            strike(noise: 0.11, band: 1200, ring: 10, tone: 0.20, pitch: 102, sustain: 45)
         case .switchLarge:
             strike(noise: 0.15, band: 2800, q: 2.5, ring: 3.5, tone: 0.10, pitch: 420, sustain: 11, pan: 0.5)
             strike(after: 6, noise: 0.08, band: 3700, q: 2.5, ring: 3, pan: 0.5)
         case .switchSmall:
-            strike(noise: 0.09, band: 4600, q: 3, ring: 2.4, pan: 0.35)
+            strike(noise: 0.30, band: 4600, q: 3, ring: 2.4, tone: 0.03, pitch: 620, sustain: 6, pan: 0.35)
         case .counterReset:
-            strike(noise: 0.12, band: 3100, q: 2, ring: 4, pan: 0.75)
-            strike(after: 12, noise: 0.07, band: 2100, q: 1.0, ring: 34, pan: 0.75)
+            strike(noise: 0.32, band: 3100, q: 2, ring: 4, tone: 0.04, pitch: 500, sustain: 8, pan: 0.75)
+            strike(after: 12, noise: 0.20, band: 2100, q: 1.0, ring: 34, pan: 0.75)
         case .lidOpen:
             strike(noise: 0.10, band: 900, q: 0.8, ring: 26, tone: 0.14, pitch: 255, sustain: 40, pan: 0.8)
         case .lidClose:
-            strike(noise: 0.22, band: 1100, q: 0.9, ring: 16, tone: 0.40, pitch: 148, sustain: 70, pan: 0.8)
+            strike(noise: 0.22, band: 1100, q: 0.9, ring: 16, tone: 0.24, pitch: 148, sustain: 70, pan: 0.8)
             strike(after: 23, noise: 0.08, band: 2700, q: 2, ring: 6, pan: 0.8)
         case .cassetteIn:
             strike(noise: 0.17, band: 1750, q: 1.5, ring: 8, tone: 0.20, pitch: 320, sustain: 30, pan: 0.8)
@@ -127,13 +127,13 @@ nonisolated struct MechanicalSounds {
             strike(noise: 0.13, band: 2050, q: 1.6, ring: 7, pan: 0.8)
             strike(after: 42, noise: 0.10, band: 1500, ring: 9, tone: 0.10, pitch: 280, sustain: 25, pan: 0.8)
         case .autoStop:
-            strike(noise: 0.32, band: 2300, q: 1.0, ring: 8, tone: 0.42, pitch: 170, sustain: 40)
-            strike(after: 8, noise: 0.20, band: 1400, ring: 15, tone: 0.34, pitch: 88, sustain: 70)
+            strike(noise: 0.30, band: 2300, q: 1.0, ring: 8, tone: 0.24, pitch: 170, sustain: 40)
+            strike(after: 8, noise: 0.20, band: 1400, ring: 15, tone: 0.20, pitch: 88, sustain: 70)
         case .plug:
-            strike(noise: 0.15, band: 2000, q: 2, ring: 5, tone: 0.30, pitch: 240, sustain: 25, pan: 0.3)
+            strike(noise: 0.15, band: 2000, q: 2, ring: 5, tone: 0.20, pitch: 240, sustain: 25, pan: 0.3)
             strike(after: 30, noise: 0.10, band: 2900, q: 2, ring: 4, pan: 0.3)
         case .footSwitch:
-            strike(noise: 0.20, band: 1300, ring: 10, tone: 0.40, pitch: 160, sustain: 40, pan: 0.3)
+            strike(noise: 0.20, band: 1300, ring: 10, tone: 0.24, pitch: 160, sustain: 40, pan: 0.3)
             strike(after: 55, noise: 0.10, band: 2500, q: 2, ring: 4, pan: 0.3)
         }
     }

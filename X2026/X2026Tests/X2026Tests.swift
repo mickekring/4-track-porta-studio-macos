@@ -658,3 +658,56 @@ struct DemoTapeTests {
         #expect(rms((after..<(after + 48_000)).map { tape.read(track: 0, frame: $0) }) == 0)
     }
 }
+
+// MARK: - Mechanical sounds
+
+@Suite("Mechanical sounds")
+struct MechanicalSoundTests {
+    private func render(seconds: Double, windSpeed: Double = 0, capstan: Double = 0, _ prepare: (inout MechanicalSounds) -> Void) -> (peak: Float, rms: Float) {
+        var sounds = MechanicalSounds()
+        sounds.prepare(sampleRate: 48_000)
+        defer { sounds.release() }
+        prepare(&sounds)
+        let left = UnsafeMutablePointer<Float>.allocate(capacity: 480)
+        let right = UnsafeMutablePointer<Float>.allocate(capacity: 480)
+        defer {
+            left.deallocate()
+            right.deallocate()
+        }
+        var peak: Float = 0
+        var energy: Float = 0
+        var count = 0
+        for _ in 0..<Int(seconds * 100) {
+            left.update(repeating: 0, count: 480)
+            right.update(repeating: 0, count: 480)
+            sounds.render(left: left, right: right, frames: 480, windSpeed: windSpeed, windTop: 8, capstan: capstan, level: 1)
+            for frame in 0..<480 {
+                peak = max(peak, abs(left[frame]), abs(right[frame]))
+                energy += right[frame] * right[frame]
+                count += 1
+            }
+        }
+        return (peak, (energy / Float(count)).squareRoot())
+    }
+
+    @Test("Every clunk is audible and none of them is a jump scare",
+          arguments: [MechanicalSound.keyDown, .keyRelease, .stopKey, .switchLarge, .switchSmall, .counterReset,
+                      .lidOpen, .lidClose, .cassetteIn, .cassetteOut, .autoStop, .plug, .footSwitch])
+    func impacts(sound: MechanicalSound) {
+        let result = render(seconds: 0.5) { $0.trigger(sound) }
+        print("mechanical \(sound): peak \(String(format: "%.3f", result.peak))")
+        #expect(result.peak > 0.02, "\(sound) is inaudible")
+        #expect(result.peak < 0.4, "\(sound) is too loud")
+    }
+
+    @Test("The motors murmur rather than roar")
+    func motors() {
+        let winding = render(seconds: 2, windSpeed: 8) { _ in }
+        let playing = render(seconds: 2, capstan: 1) { _ in }
+        let idle = render(seconds: 1) { _ in }
+        print("mechanical wind rms \(winding.rms) peak \(winding.peak); play rms \(playing.rms); idle \(idle.peak)")
+        #expect(winding.rms > 0.003 && winding.peak < 0.25)
+        #expect(playing.rms > 0.0003 && playing.rms < winding.rms)
+        #expect(idle.peak == 0)
+    }
+}

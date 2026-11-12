@@ -5,6 +5,8 @@ import SwiftUI
 struct DeskView: View {
     @Bindable var desk: Desk
 
+    @FocusState private var atTheMachine: Bool
+
     private var machine: Machine { desk.machine }
 
     var body: some View {
@@ -15,6 +17,19 @@ struct DeskView: View {
             .animation(.smooth(duration: 0.55), value: desk.leanedIn)
         }
         .ignoresSafeArea()
+        // The keyboard works the transport only while the desk itself has
+        // focus, so typing on a label never presses RECORD.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($atTheMachine)
+        .onAppear { atTheMachine = true }
+        .simultaneousGesture(TapGesture().onEnded { atTheMachine = true })
+        .onChange(of: desk.editing == nil) { _, closed in
+            if closed { atTheMachine = true }
+        }
+        .onKeyPress(phases: [.down, .up]) { press in
+            handle(press) ? .handled : .ignored
+        }
         .sheet(item: $desk.editing) { cassette in
             LabelEditor(cassette: cassette) { edited in
                 machine.relabel(edited)
@@ -30,6 +45,45 @@ struct DeskView: View {
         } message: { cassette in
             Text("Everything recorded on “\(cassette.title.isEmpty ? "the unlabelled tape" : cassette.title)” goes in the bin with it. There is no getting a tape back.")
         }
+    }
+
+    /// Keys behave like fingers: the transport key stays down for as long
+    /// as the key on the keyboard does.
+    private func handle(_ press: KeyPress) -> Bool {
+        guard press.modifiers.isDisjoint(with: [.command, .control, .option]) else { return false }
+        let transport: TransportKey?
+        switch press.key {
+        case .space: transport = machine.keysDown.isEmpty ? .play : .stop
+        case .return: transport = .stop
+        case .leftArrow: transport = .rewind
+        case .rightArrow: transport = .fastForward
+        case "r": transport = .record
+        default: transport = nil
+        }
+        if let transport {
+            switch press.phase {
+            case .down:
+                // Decide once, on the way down, which key the space bar meant.
+                if machine.keyHeld == nil { machine.press(transport) }
+            case .up:
+                if let held = machine.keyHeld { machine.release(held) }
+            default:
+                break
+            }
+            return true
+        }
+        guard press.phase == .down else { return ["p", "0", "z"].contains(press.key) }
+        switch press.key {
+        case "p":
+            machine.stepOnFootSwitch()
+        case "0":
+            machine.resetCounter()
+        case "z":
+            desk.leanedIn.toggle()
+        default:
+            return false
+        }
+        return true
     }
 
     private func scene(unit: CGFloat) -> some View {

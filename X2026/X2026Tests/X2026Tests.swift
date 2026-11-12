@@ -181,6 +181,26 @@ struct TransportTests {
         #expect(deck.position == total)
     }
 
+    @Test("Winding into either end of the tape trips the auto-stop at a real sample rate",
+          arguments: [TapeDeck.Motion.fastForward, .rewind])
+    func autoStopAfterWinding(motion: TapeDeck.Motion) {
+        var deck = TapeDeck()
+        deck.configure(sampleRate: 48_000)
+        let total = TapeStock.c46.totalLength * CassetteStandard.framesPerMeter
+        // Start a few metres from the end the tape is being wound towards.
+        deck.load(stock: .c46, position: motion == .fastForward ? total - 4_000_000 : 4_000_000)
+        deck.set(motion: motion)
+        var samples = 0
+        while deck.motion != .stop && samples < 48_000 * 30 {
+            deck.advance(pitch: 0)
+            samples += 1
+        }
+        #expect(deck.motion == .stop)
+        #expect(deck.autoStopCount == 1)
+        #expect(deck.position == (motion == .fastForward ? total : 0))
+        #expect(deck.windSpeed == 0)
+    }
+
     @Test("Reel geometry is consistent")
     func geometry() {
         let geometry = ReelGeometry(stock: .c60)
@@ -550,5 +570,57 @@ struct SoundTests {
         let factor = seconds / (Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) * 1e-18)
         print("X-2026 core: \(String(format: "%.1f", factor))× real time, worst case, this build configuration")
         #expect(factor > 3)
+    }
+}
+
+// MARK: - Machine
+
+@Suite("Machine")
+@MainActor
+struct MachineTests {
+    @Test("Changing the tape does not disturb the counter, and it counts hub turns from there")
+    func counterSurvivesTapeChange() throws {
+        let machine = Machine.forPreview(loadTape: false)
+        let cassette = try #require(machine.library.cassettes.first)
+        try machine.insert(cassette)
+        let position = machine.telemetry.position
+        #expect(abs(position - cassette.position) < 1)
+        #expect(abs(machine.counterValue(at: position)) < 0.001)
+
+        // One more turn of the take-up hub is 0.6 on the counter.
+        let geometry = ReelGeometry(stock: cassette.stock)
+        let meters = position / CassetteStandard.framesPerMeter
+        let oneTurnOn = geometry.wound(turns: geometry.takeUpTurns(at: meters) + 1) * CassetteStandard.framesPerMeter
+        #expect(abs(machine.counterValue(at: oneTurnOn) - Machine.counterDigitsPerTurn) < 0.001)
+
+        // Take it out: the counter stays put.
+        let removed = try #require(machine.removeCassette())
+        #expect(abs(removed.position - cassette.position) < 1)
+        #expect(abs(machine.counterValue(at: machine.telemetry.position)) < 0.001)
+    }
+
+    @Test("Transport keys interlock like a mechanical latch bar")
+    func keyInterlock() {
+        let machine = Machine.forPreview()
+        machine.press(.play)
+        machine.release(.play)
+        #expect(machine.keysDown == [.play])
+        // RECORD on top of PLAY punches in.
+        machine.press(.record)
+        machine.release(.record)
+        #expect(machine.keysDown == [.record, .play])
+        // Any wind key lets the others spring up.
+        machine.press(.rewind)
+        machine.release(.rewind)
+        #expect(machine.keysDown == [.rewind])
+        // RECORD alone takes PLAY down with it.
+        machine.press(.record)
+        machine.release(.record)
+        #expect(machine.keysDown == [.record, .play])
+        machine.press(.stop)
+        #expect(machine.keysDown.isEmpty)
+        #expect(machine.keyHeld == .stop)
+        machine.release(.stop)
+        #expect(machine.keyHeld == nil)
     }
 }

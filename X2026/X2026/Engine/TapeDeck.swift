@@ -200,30 +200,31 @@ nonisolated struct TapeDeck: Sendable {
         }
 
         // The tape is anchored to the hubs: at either end it simply stops.
-        var next = position + step
-        var blocked = false
-        if next >= totalFrames {
-            next = totalFrames
-            blocked = step > 0
-        } else if next <= 0 {
-            next = 0
-            blocked = step < 0
-        }
+        let next = max(0, min(totalFrames, position + step))
         velocity = next - position
         position = next
 
-        if blocked {
+        // A key still asking for motion against the end of the tape stalls
+        // the mechanism, and after a moment the auto-stop lets go.
+        let pulling: Bool
+        switch motion {
+        case .play, .fastForward: pulling = position >= totalFrames
+        case .rewind: pulling = position <= 0
+        case .stop: pulling = false
+        }
+        if pulling {
             windSpeed = 0
-            if motion != .stop {
-                stallTime += 1 / sampleRate
-                if stallTime >= calibration.autoStopDelay {
-                    motion = .stop
-                    stallTime = 0
-                    autoStopCount &+= 1
-                }
+            stallTime += 1 / sampleRate
+            if stallTime >= calibration.autoStopDelay {
+                motion = .stop
+                stallTime = 0
+                autoStopCount &+= 1
             }
         } else {
             stallTime = 0
+            if (position >= totalFrames && windSpeed > 0) || (position <= 0 && windSpeed < 0) {
+                windSpeed = 0
+            }
         }
     }
 

@@ -254,6 +254,19 @@ nonisolated struct MachineDSP {
         mechanics.trigger(sound)
     }
 
+    /// The state of the transport right now, for when no audio block has run
+    /// since something changed (a tape was just loaded, say).
+    func idleReport() -> Telemetry {
+        var report = Telemetry()
+        report.hasTape = deck.hasTape
+        report.position = deck.position
+        report.motion = deck.motion
+        report.capstan = Float(deck.capstan)
+        report.windSpeed = Float(deck.windSpeed)
+        report.autoStopCount = deck.autoStopCount
+        return report
+    }
+
     // MARK: Tapers
 
     /// Rotary level pots: unity at 6 on the dial, about +7 dB flat out.

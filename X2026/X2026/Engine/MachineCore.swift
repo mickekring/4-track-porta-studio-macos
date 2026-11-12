@@ -61,13 +61,22 @@ nonisolated final class MachineCore: @unchecked Sendable {
 
     /// Drops a cassette onto the spindles.
     func insert(medium: TapeMedium, stock: TapeStock, position: Double, recordProtected: Bool) {
-        locked { $0.load(medium: medium, stock: stock, position: position, recordProtected: recordProtected) }
+        locked {
+            $0.load(medium: medium, stock: stock, position: position, recordProtected: recordProtected)
+            // Holding the lock makes us the only writer for a moment, so the
+            // main thread may report on the audio thread's behalf.
+            telemetry.post($0.idleReport())
+        }
     }
 
     /// Lifts the cassette out. Returns where its tape was left.
     @discardableResult
     func eject() -> Double {
-        locked { $0.unload() }
+        locked {
+            let position = $0.unload()
+            telemetry.post($0.idleReport())
+            return position
+        }
     }
 
     /// Where the tape is right now, without waiting for the next audio block.

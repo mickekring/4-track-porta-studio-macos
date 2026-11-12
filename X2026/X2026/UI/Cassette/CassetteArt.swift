@@ -81,7 +81,7 @@ enum CassetteArt {
 
     /// Draws the cassette with its top-left corner at the origin.
     /// The context must already be scaled to millimetres.
-    static func draw(_ context: GraphicsContext, cassette: Cassette, reels: ReelState) {
+    static func draw(_ context: GraphicsContext, cassette: Cassette, reels: ReelState, onSpindles: Bool = false) {
         let colours = palette(for: cassette.design)
         let body = CGRect(origin: .zero, size: size)
         let outline = Path(roundedRect: body, cornerRadius: 2.3)
@@ -95,6 +95,10 @@ enum CassetteArt {
         drawPack(inside, centre: CGPoint(x: rightHubX, y: hubY), radius: reels.takeUpRadius)
         drawHub(inside, centre: CGPoint(x: leftHubX, y: hubY), angle: reels.supplyAngle)
         drawHub(inside, centre: CGPoint(x: rightHubX, y: hubY), angle: reels.takeUpAngle)
+        if onSpindles {
+            drawSpindle(inside, centre: CGPoint(x: leftHubX, y: hubY), angle: reels.supplyAngle)
+            drawSpindle(inside, centre: CGPoint(x: rightHubX, y: hubY), angle: reels.takeUpAngle)
+        }
 
         // The shell, with the window cut out of it.
         var shellShape = outline
@@ -187,6 +191,22 @@ enum CassetteArt {
         // A moulding mark, so you can see it turn.
         hub.fill(Path(ellipseIn: CGRect(x: -0.35, y: -5.1, width: 0.7, height: 0.7)), with: .color(.black.opacity(0.25)))
         hub.stroke(Path(ellipseIn: CGRect(x: -5.45, y: -5.45, width: 10.9, height: 10.9)), with: .color(.black.opacity(0.45)), lineWidth: 0.2)
+    }
+
+    /// The machine's drive spindle, poking up through a hub.
+    static func drawSpindle(_ context: GraphicsContext, centre: CGPoint, angle: Double) {
+        var spindle = context
+        spindle.translateBy(x: centre.x, y: centre.y)
+        spindle.rotate(by: .radians(angle))
+        let metal = Color(white: 0.34)
+        spindle.fill(Path(ellipseIn: CGRect(x: -2.5, y: -2.5, width: 5, height: 5)), with: .radialGradient(
+            Gradient(colors: [Color(white: 0.5), metal, Color(white: 0.16)]),
+            center: CGPoint(x: -0.6, y: -0.8), startRadius: 0, endRadius: 3))
+        for _ in 0..<3 {
+            spindle.fill(Path(roundedRect: CGRect(x: -0.5, y: -3.55, width: 1.0, height: 1.5), cornerRadius: 0.2), with: .color(metal))
+            spindle.rotate(by: .degrees(120))
+        }
+        spindle.fill(Path(ellipseIn: CGRect(x: -0.7, y: -0.7, width: 1.4, height: 1.4)), with: .color(Color(white: 0.08)))
     }
 
     /// The thicker wedge along the open edge, where the heads and capstan go in.
@@ -328,19 +348,21 @@ enum CassetteArt {
 struct CassetteView: View {
     var cassette: Cassette
     var reels: ReelState
+    var onSpindles: Bool
 
     @Environment(\.unit) private var unit
 
-    init(cassette: Cassette, reels: ReelState? = nil) {
+    init(cassette: Cassette, reels: ReelState? = nil, onSpindles: Bool = false) {
         self.cassette = cassette
         self.reels = reels ?? ReelState(stock: cassette.stock, position: cassette.position)
+        self.onSpindles = onSpindles
     }
 
     var body: some View {
         Canvas { context, _ in
             var scaled = context
             scaled.scaleBy(x: unit, y: unit)
-            CassetteArt.draw(scaled, cassette: cassette, reels: reels)
+            CassetteArt.draw(scaled, cassette: cassette, reels: reels, onSpindles: onSpindles)
         }
         .frame(width: CassetteArt.size.width * unit, height: CassetteArt.size.height * unit)
     }

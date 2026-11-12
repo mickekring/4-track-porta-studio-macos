@@ -71,7 +71,7 @@ struct SlideSwitch: View {
 
     private var cap: some View {
         let large = style == .large
-        let base = large ? Color(white: 0.115) : Color(white: 0.62)
+        let base = large ? Color(white: 0.175) : Color(white: 0.62)
         let vertical = axis == .vertical
         return ZStack {
             RoundedRectangle(cornerRadius: unit * (large ? 0.8 : 0.4))
@@ -84,9 +84,11 @@ struct SlideSwitch: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: unit * (large ? 0.8 : 0.4))
-                        .strokeBorder(.black.opacity(0.7), lineWidth: max(0.5, unit * 0.12))
+                        .strokeBorder(
+                            LinearGradient(colors: [.white.opacity(large ? 0.22 : 0.3), .black.opacity(0.8)], startPoint: .top, endPoint: .bottom),
+                            lineWidth: max(0.5, unit * 0.16))
                 )
-                .shadow(color: .black.opacity(0.7), radius: unit * 0.4, y: unit * 0.4)
+                .shadow(color: .black.opacity(0.8), radius: unit * 0.5, y: unit * 0.5)
 
             if large {
                 // Thumb ribs running across the cap, and the painted stripe.
@@ -108,8 +110,8 @@ struct SlideSwitch: View {
                 RoundedRectangle(cornerRadius: unit * 0.2)
                     .fill(stripe)
                     .frame(
-                        width: vertical ? capSize.across * unit * 0.34 : unit * 1.1,
-                        height: vertical ? unit * 1.1 : capSize.across * unit * 0.34
+                        width: vertical ? capSize.across * unit * 0.46 : unit * 1.35,
+                        height: vertical ? unit * 1.35 : capSize.across * unit * 0.46
                     )
             }
         }

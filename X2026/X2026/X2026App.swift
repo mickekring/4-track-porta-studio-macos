@@ -1,17 +1,193 @@
-//
-//  X2026App.swift
-//  X2026
-//
-//  Created by Micke Kring on 2026-11-12.
-//
-
 import SwiftUI
 
 @main
 struct X2026App: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
+    @State private var machine: Machine
+    @State private var desk: Desk
+
+    /// True when the app is only running to host the unit tests.
+    private static let isHostingTests = NSClassFromString("XCTestCase") != nil
+
+    init() {
+        let machine = Machine()
+        _machine = State(initialValue: machine)
+        _desk = State(initialValue: Desk(machine: machine))
+        if !Self.isHostingTests {
+            FirstRun.stockTheDesk(machine.library)
         }
+    }
+
+    var body: some Scene {
+        Window("\(Brand.maker) \(Brand.model)", id: "desk") {
+            if Self.isHostingTests {
+                Color.black
+            } else {
+                DeskView(desk: desk)
+                    .frame(minWidth: 906, minHeight: 546)
+                    .task {
+                        machine.powerOn()
+                        #if DEBUG
+                        if SelfTest.isRequested {
+                            await SelfTest.run(machine: machine, desk: desk)
+                            NSApplication.shared.terminate(nil)
+                        }
+                        #endif
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                        machine.powerOff()
+                    }
+            }
+        }
+        .defaultSize(width: 1410, height: 850)
+        .windowResizability(.contentMinSize)
+        .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            MachineCommands(machine: machine, desk: desk)
+        }
+
+        Window("\(Brand.model) Owner's Manual", id: "manual") {
+            ManualView()
+        }
+        .defaultSize(width: 720, height: 820)
+
+        Settings {
+            SettingsView(machine: machine)
+        }
+    }
+}
+
+/// What a new owner finds on the desk the first time.
+enum FirstRun {
+    static func stockTheDesk(_ library: TapeLibrary) {
+        guard library.cassettes.isEmpty else { return }
+        library.addBlank(stock: .c60, design: .krom, title: "")
+        library.addBlank(stock: .c90, design: .rost, title: "Idéer & riff")
+    }
+}
+
+/// Menu-bar commands and the keyboard shortcuts for the transport.
+struct MachineCommands: Commands {
+    let machine: Machine
+    let desk: Desk
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("\(Brand.model) Owner's Manual") { openWindow(id: "manual") }
+                .keyboardShortcut("?", modifiers: [.command])
+        }
+        CommandMenu("Transport") {
+            Button("Play") { tap(.play) }
+                .keyboardShortcut(.space, modifiers: [])
+            Button("Stop") { tap(.stop) }
+                .keyboardShortcut(.return, modifiers: [])
+            Button("Record") { tap(.record) }
+                .keyboardShortcut("r", modifiers: [])
+            Button("Rewind") { tap(.rewind) }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+            Button("Fast Forward") { tap(.fastForward) }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+            Divider()
+            Button("Step on the Foot Switch") { machine.stepOnFootSwitch() }
+                .keyboardShortcut("p", modifiers: [])
+                .disabled(!machine.footSwitchConnected)
+            Button("Reset Counter") { machine.resetCounter() }
+                .keyboardShortcut("0", modifiers: [])
+        }
+        CommandGroup(before: .toolbar) {
+            Button(desk.leanedIn ? "Sit Back" : "Lean In") { desk.leanedIn.toggle() }
+                .keyboardShortcut("z", modifiers: [])
+            Divider()
+        }
+        CommandMenu("Tape") {
+            Button(desk.lidOpening > 0.5 ? "Close the Lid" : "Open the Lid") { desk.toggleLid() }
+                .keyboardShortcut("l", modifiers: [.command])
+            Button("Take the Cassette Out") { desk.eject() }
+                .keyboardShortcut("e", modifiers: [.command])
+                .disabled(machine.loaded == nil)
+            Button("Turn the Cassette Over") { desk.turnOverLoaded() }
+                .keyboardShortcut("b", modifiers: [.command])
+                .disabled(machine.loaded == nil)
+            Divider()
+            Menu("Unwrap a Blank Tape") {
+                ForEach(CassetteDesign.allCases, id: \.self) { design in
+                    ForEach(TapeStock.all) { stock in
+                        Button("\(design.brand) \(design.grade) \(stock.name)") {
+                            desk.unwrapBlank(stock: stock, design: design)
+                        }
+                    }
+                }
+            }
+            Button("Show Tapes in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([machine.library.root])
+            }
+        }
+    }
+
+    /// Space bar behaves like a finger that knows what it wants: PLAY when
+    /// stopped, STOP when anything is running.
+    private func tap(_ key: TransportKey) {
+        let target: TransportKey = key == .play && !machine.keysDown.isEmpty ? .stop : key
+        machine.press(target)
+        Task {
+            try? await Task.sleep(for: .milliseconds(110))
+            machine.release(target)
+        }
+    }
+}
+
+/// The few things that are about the Mac rather than the machine.
+struct SettingsView: View {
+    @Bindable var machine: Machine
+
+    var body: some View {
+        Form {
+            Section("Sound of the mechanism") {
+                Slider(value: $machine.mechanicalLevel, in: 0...1) {
+                    Text("Keys, motors and lid")
+                } minimumValueLabel: {
+                    Image(systemName: "speaker")
+                } maximumValueLabel: {
+                    Image(systemName: "speaker.wave.3")
+                }
+            }
+            Section("Audio hardware") {
+                LabeledContent("Output (PHONES)", value: machine.audio.outputDeviceName.isEmpty ? "—" : machine.audio.outputDeviceName)
+                LabeledContent("Input", value: machine.audio.inputDeviceName.isEmpty ? "—" : machine.audio.inputDeviceName)
+                LabeledContent("Sample rate", value: "\(Int(machine.audio.sampleRate)) Hz")
+                LabeledContent(
+                    "Round trip",
+                    value: machine.audio.roundTripLatency == 0
+                        ? "no input in use"
+                        : String(format: "%.1f ms", Double(machine.audio.roundTripLatency) / machine.audio.sampleRate * 1000))
+                if machine.audio.microphoneDenied {
+                    Text("The X-2026 is not allowed to use audio input. Allow it under System Settings → Privacy & Security → Microphone.")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
+                if let problem = machine.audio.problem {
+                    Text(problem).font(.callout).foregroundStyle(.red)
+                }
+            }
+            Section {
+                Slider(value: $machine.latencyTrim, in: -20...20, step: 0.5) {
+                    Text("Head alignment")
+                } minimumValueLabel: {
+                    Text("−20").font(.caption)
+                } maximumValueLabel: {
+                    Text("+20").font(.caption)
+                }
+                Text(String(format: "%+.1f ms. Overdubs are shifted to cancel the Mac's audio round trip; nudge this if yours land early or late.", machine.latencyTrim))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Overdub timing")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

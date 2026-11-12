@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 import Synchronization
 import UniformTypeIdentifiers
@@ -253,11 +252,13 @@ struct MasterRecorderView: View {
     let machine: Machine
 
     @Environment(\.unit) private var unit
-    @State private var recording = false
     @State private var lastMix: URL?
     @State private var problem: String?
 
     private var recorder: MasterRecorder { machine.audio.context.masterRecorder }
+    /// The lamp follows the recorder itself, which can stop without being
+    /// told to (the audio hardware changed sample rate).
+    private var recording: Bool { machine.masterRecording }
 
     var body: some View {
         let size = Accessories.masterRecorderSize
@@ -273,34 +274,31 @@ struct MasterRecorderView: View {
             legend("2-TRACK MASTER RECORDER", size: 1.9, unit: unit, colour: Color(white: 0.15))
                 .offset(x: unit * 6.4, y: unit * 11.4)
 
-            // Display: elapsed time and two level meters.
-            TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
-                let levels = recorder.levels
-                let elapsed = recording ? recorder.elapsed : 0
-                ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: unit)
-                        .fill(Color(red: 0.03, green: 0.05, blue: 0.04))
-                    Text(String(format: "%02d:%02d", Int(elapsed) / 60, Int(elapsed) % 60))
-                        .font(.custom("DINAlternate-Bold", size: unit * 9))
-                        .foregroundStyle(recording ? Theme.ledRed : Color(red: 0.30, green: 0.85, blue: 0.55))
-                        .shadow(color: (recording ? Theme.ledRed : Theme.ledGreen).opacity(0.6), radius: unit * 1.2)
-                        .position(x: unit * 26, y: unit * 9.5)
-                    ForEach(0..<2, id: \.self) { side in
-                        let level = Level.decibels(side == 0 ? levels.left : levels.right)
-                        HStack(spacing: unit * 0.55) {
-                            ForEach(0..<12, id: \.self) { segment in
-                                let threshold = Float(segment) * 3 - 27
-                                let colour = threshold >= 3 ? Theme.ledRed : (threshold >= -3 ? Theme.ledAmber : Theme.ledGreen)
-                                Rectangle()
-                                    .fill(level >= threshold ? colour : colour.mix(with: .black, by: 0.85))
-                                    .frame(width: unit * 2.1, height: unit * 2.6)
-                            }
+            // Display: elapsed time and two level meters. Driven by what the
+            // machine publishes, so it only redraws when the picture changes.
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: unit)
+                    .fill(Color(red: 0.03, green: 0.05, blue: 0.04))
+                Text(String(format: "%02d:%02d", machine.masterSeconds / 60, machine.masterSeconds % 60))
+                    .font(.custom("DINAlternate-Bold", size: unit * 9))
+                    .foregroundStyle(recording ? Theme.ledRed : Color(red: 0.30, green: 0.85, blue: 0.55))
+                    .shadow(color: (recording ? Theme.ledRed : Theme.ledGreen).opacity(0.6), radius: unit * 1.2)
+                    .position(x: unit * 26, y: unit * 9.5)
+                ForEach(0..<2, id: \.self) { side in
+                    let lit = machine.masterSegments[side]
+                    HStack(spacing: unit * 0.55) {
+                        ForEach(0..<12, id: \.self) { segment in
+                            let threshold = Machine.masterMeterMarks[segment]
+                            let colour = threshold >= 3 ? Theme.ledRed : (threshold >= -3 ? Theme.ledAmber : Theme.ledGreen)
+                            Rectangle()
+                                .fill(segment < lit ? colour : colour.mix(with: .black, by: 0.85))
+                                .frame(width: unit * 2.1, height: unit * 2.6)
                         }
-                        .position(x: unit * 62, y: unit * (6.6 + CGFloat(side) * 5.6))
                     }
+                    .position(x: unit * 62, y: unit * (6.6 + CGFloat(side) * 5.6))
                 }
-                .frame(width: unit * 84, height: unit * 19)
             }
+            .frame(width: unit * 84, height: unit * 19)
             .offset(x: unit * 6, y: unit * 17.5)
 
             PushButton(
@@ -345,11 +343,6 @@ struct MasterRecorderView: View {
         }
         .frame(width: size.width * unit, height: size.height * unit, alignment: .topLeading)
         .shadow(color: .black.opacity(0.5), radius: 4 * unit, x: 2 * unit, y: 4 * unit)
-        // The recorder can stop without being told to (the audio hardware
-        // changed sample rate): keep the lamp honest.
-        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
-            if recording != recorder.isRecording { recording = recorder.isRecording }
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Master recorder")
     }
@@ -359,7 +352,7 @@ struct MasterRecorderView: View {
     }
 
     private func start() {
-        guard !recording else { return }
+        guard !recorder.isRecording else { return }
         machine.core.sounds.push(.keyDown)
         do {
             try FileManager.default.createDirectory(at: Self.mixFolder, withIntermediateDirectories: true)
@@ -369,7 +362,6 @@ struct MasterRecorderView: View {
             let safe = title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
             let url = Self.mixFolder.appending(path: "\(safe) \(stamp).wav")
             try recorder.begin(url: url)
-            recording = true
             problem = nil
         } catch {
             problem = "Could not start recording."
@@ -378,9 +370,7 @@ struct MasterRecorderView: View {
 
     private func stop() {
         machine.core.sounds.push(.stopKey)
-        guard recording else { return }
-        recording = false
-        guard let finished = recorder.end() else { return }
+        guard recorder.isRecording, let finished = recorder.end() else { return }
         lastMix = finished
 
         // Offer to put the master somewhere sensible.

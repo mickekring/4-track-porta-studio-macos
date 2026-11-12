@@ -39,8 +39,6 @@ nonisolated enum Layout {
     static let meterColumnX: [CGFloat] = [78.45, 85.45, 92.45, 99.45]
     static let meterRowY: [CGFloat] = [91.3, 97.3, 103.3, 109.4, 115.5, 121.5, 127.5]
     static let meterMarks = ["6", "3", "0", "3", "6", "10", "20"]
-    /// Level in dB at which each segment lights, top to bottom.
-    static let meterThresholds: [Float] = [6, 3, 0, -3, -6, -10, -20]
     static let segment = CGSize(width: 5.2, height: 3.5)
     static let lampY: CGFloat = 138.9
     static let meterSwitch = CGPoint(x: 88.95, y: 152.2)

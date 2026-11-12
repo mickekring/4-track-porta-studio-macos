@@ -135,6 +135,10 @@ A second agent read the audio engine cold. What it found and what was done:
 | Tests: feedback test passed vacuously; leader test too weak; punch test compared RMS at a 1.6 % margin; claims without assertions; wall-clock performance threshold | Rewritten with real assertions (Goertzel for the punch overlap, meters for the howl, CPU time for speed) |
 | Factory panel in REMIX with the sub mix up put an armed track at loop gain 0.988 | Factory panel is now NORM; tested that PLAY still just works and arming is safe |
 
+Idle cost: the installed build sat at 18 % CPU doing nothing, all of it SwiftUI
+re-evaluating two always-on timelines (LED meters, master recorder display).
+Both now redraw only when what they show changes: under 1 % at rest.
+
 Not done from the review: giving the audio thread a RAM window of tape instead
 of touching the memory-mapped file directly (the robust cure for page faults
 and for a disk filling mid-take), and a threaded stress run under TSan/ASan.

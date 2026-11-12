@@ -128,6 +128,10 @@ X2026/X2026/
   UI/        faceplate, controls, cassette art, desk, hand, accessories
 ```
 
+- **The build to use is the one in `/Applications`.** `./scripts/install.sh`
+  builds the optimised app and installs it there (it refuses if that copy is
+  running). Xcode's Run, the unit tests and the previews still build to
+  DerivedData, because they need a debug build.
 - Tests: `xcodebuild test -project X2026/X2026.xcodeproj -scheme X2026 -destination 'platform=macOS'`
 - End-to-end run of the real app (debug builds): launch the built binary with
   `--self-test`. It inserts a scratch tape by hand, records the rhythm box,

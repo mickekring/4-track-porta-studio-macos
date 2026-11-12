@@ -108,6 +108,14 @@ final class Machine {
     /// Bumped whenever the counter jumps without the tape moving (reset, tape change).
     private(set) var counterRevision = 0
     private(set) var lamps: [TrackLamp] = Array(repeating: .tape, count: 4)
+    /// How many segments of each LED column are lit (0…7). Published only
+    /// when it changes, so a silent machine costs nothing to display.
+    private(set) var meterSegments = [0, 0, 0, 0]
+    /// The master recorder's display: lit segments (0…12) left and right,
+    /// whether it is rolling, and for how many whole seconds.
+    private(set) var masterSegments = [0, 0]
+    private(set) var masterRecording = false
+    private(set) var masterSeconds = 0
     private(set) var isRecording = false
     /// True while tape is moving in any direction.
     private(set) var isMoving = false
@@ -117,6 +125,11 @@ final class Machine {
     var notice: String?
 
     // MARK: Private
+
+    /// Level in dB at which each meter segment lights, top to bottom.
+    nonisolated static let meterMarks: [Float] = [6, 3, 0, -3, -6, -10, -20]
+    /// The master recorder's twelve segments, bottom to top.
+    nonisolated static let masterMeterMarks: [Float] = (0..<12).map { Float($0) * 3 - 27 }
 
     /// Counter digits per revolution of the take-up hub. The counter is driven
     /// by a belt off that hub, so it counts turns, not time.
@@ -484,6 +497,25 @@ final class Machine {
 
         let fresh = (0..<4).map { TrackLamp(rawValue: report.lamps[$0]) ?? .tape }
         if fresh != lamps { lamps = fresh }
+
+        // Meters: work out what the LEDs show and publish only a change. A
+        // segment comes on a little before its mark, as ladder comparators do.
+        let segments = (0..<4).map { column in
+            let level = Level.decibels(report.meters[column])
+            return Self.meterMarks.count { level >= $0 - 1.2 }
+        }
+        if segments != meterSegments { meterSegments = segments }
+
+        let recorder = audio.context.masterRecorder
+        let levels = recorder.levels
+        let master = [levels.left, levels.right].map { level in
+            Self.masterMeterMarks.count { Level.decibels(level) >= $0 }
+        }
+        if master != masterSegments { masterSegments = master }
+        let rolling = recorder.isRecording
+        if rolling != masterRecording { masterRecording = rolling }
+        let seconds = rolling ? Int(recorder.elapsed) : 0
+        if seconds != masterSeconds { masterSeconds = seconds }
         if report.isRecording != isRecording { isRecording = report.isRecording }
         let moving = report.capstan > 0.01 || abs(report.windSpeed) > 0.01
         let justStopped = isMoving && !moving

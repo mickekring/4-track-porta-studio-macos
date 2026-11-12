@@ -10,15 +10,14 @@ struct MeterLights: View {
     @Environment(\.unit) private var unit
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
-            // Read the levels out here, not inside the Canvas: SwiftUI only
-            // redraws a Canvas when something it captured has changed.
-            let report = machine.telemetry
-            Canvas { context, _ in
-                var scaled = context
-                scaled.scaleBy(x: unit, y: unit)
-                Self.draw(scaled, report: report)
-            }
+        // No timeline here: the machine publishes what the LEDs show only
+        // when that changes, and SwiftUI redraws the Canvas only then.
+        let segments = machine.meterSegments
+        let lamps = machine.lamps
+        Canvas { context, _ in
+            var scaled = context
+            scaled.scaleBy(x: unit, y: unit)
+            Self.draw(scaled, segments: segments, lamps: lamps)
         }
         .frame(width: Layout.size.width * unit, height: Layout.size.height * unit)
         .allowsHitTesting(false)
@@ -29,21 +28,22 @@ struct MeterLights: View {
         row <= 2 ? Theme.ledRed : Theme.ledAmber
     }
 
-    static func draw(_ context: GraphicsContext, report: Telemetry) {
+    /// - Parameters:
+    ///   - segments: lit segments per column, counted from the bottom.
+    ///   - lamps: colour of the arrow under each column.
+    static func draw(_ context: GraphicsContext, segments: [Int], lamps: [TrackLamp]) {
         var glow = context
         glow.addFilter(.blur(radius: 1.6))
 
+        let rows = Layout.meterRowY.count
         for column in 0..<4 {
-            let level = Level.decibels(report.meters[column])
-            for row in 0..<Layout.meterThresholds.count {
+            for row in 0..<rows {
                 let rect = CGRect(
                     x: Layout.meterColumnX[column] - Layout.segment.width / 2,
                     y: Layout.meterRowY[row] - Layout.segment.height / 2,
                     width: Layout.segment.width, height: Layout.segment.height)
                 let shape = Path(roundedRect: rect, cornerRadius: 0.5)
-                // A segment comes on a little before its mark, as real ladder
-                // comparators do.
-                let lit = level >= Layout.meterThresholds[row] - 1.2
+                let lit = row >= rows - segments[column]
                 let colour = colour(row: row)
                 if lit {
                     glow.fill(Path(roundedRect: rect.insetBy(dx: -1.0, dy: -0.8), cornerRadius: 1), with: .color(colour.opacity(0.55)))
@@ -58,8 +58,7 @@ struct MeterLights: View {
         }
 
         for column in 0..<4 {
-            let lamp = TrackLamp(rawValue: report.lamps[column]) ?? .tape
-            let colour: Color = switch lamp {
+            let colour: Color = switch lamps[column] {
             case .tape: Theme.ledGreen
             case .standby: Theme.ledAmber
             case .recording: Theme.ledRed
@@ -175,15 +174,12 @@ private struct KeyCap: View {
 }
 
 #Preview("Meters") {
-    var report = Telemetry()
-    report.meters = Quad(2.2, 1.0, 0.33, 0.06)
-    report.lamps = Quad(TrackLamp.recording.rawValue, TrackLamp.standby.rawValue, TrackLamp.tape.rawValue, TrackLamp.tape.rawValue)
-    return Canvas { context, _ in
+    Canvas { context, _ in
         var scaled = context
         scaled.scaleBy(x: 8, y: 8)
         scaled.translateBy(x: -60, y: -76)
         FaceplateArt.draw(scaled)
-        MeterLights.draw(scaled, report: report)
+        MeterLights.draw(scaled, segments: [7, 5, 2, 0], lamps: [.recording, .standby, .tape, .tape])
     }
     .frame(width: 60 * 8, height: 90 * 8)
     .background(Theme.body)

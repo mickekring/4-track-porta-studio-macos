@@ -42,6 +42,12 @@ final class TapeLibrary {
         cassettes = folders
             .filter { $0.pathExtension == Self.packageExtension }
             .compactMap { folder -> Cassette? in
+                // A folder with oxide but no label is a recording session that
+                // never finished (the app quit mid-demo, say): clear it away.
+                guard FileManager.default.fileExists(atPath: folder.appending(path: "label.json").path(percentEncoded: false)) else {
+                    try? FileManager.default.removeItem(at: folder)
+                    return nil
+                }
                 do {
                     let data = try Data(contentsOf: folder.appending(path: "label.json"))
                     return try decoder.decode(Cassette.self, from: data)
@@ -60,6 +66,13 @@ final class TapeLibrary {
         cassettes.append(cassette)
         save(cassette)
         return cassette
+    }
+
+    /// Puts a cassette that already has something on it onto the desk.
+    func add(_ cassette: Cassette) {
+        guard !cassettes.contains(where: { $0.id == cassette.id }) else { return }
+        cassettes.append(cassette)
+        save(cassette)
     }
 
     /// Writes the label back. Call whenever a cassette's title, notes or tape

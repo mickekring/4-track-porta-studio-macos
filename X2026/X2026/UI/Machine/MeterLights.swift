@@ -10,7 +10,7 @@ struct MeterLights: View {
     @Environment(\.unit) private var unit
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60)) { _ in
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
             Canvas { context, _ in
                 var scaled = context
                 scaled.scaleBy(x: unit, y: unit)

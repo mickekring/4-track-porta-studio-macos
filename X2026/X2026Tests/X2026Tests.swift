@@ -624,3 +624,37 @@ struct MachineTests {
         #expect(machine.keyHeld == nil)
     }
 }
+
+// MARK: - Demo tape
+
+@Suite("Demo tape")
+struct DemoTapeTests {
+    @Test("The demo records four tracks of music, in time with each other")
+    func demo() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "x2026-demo-\(UUID().uuidString).pcm")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let stock = TapeStock.c46
+        let start = try DemoTape.record(to: url, stock: stock)
+        let tape = try TapeMedium(url: url, frameCount: stock.frameCount)
+        let leader = stock.leaderLength * CassetteStandard.framesPerMeter
+        let origin = Int(start - leader)
+
+        // Twenty seconds in, everybody is playing.
+        let middle = origin + 48_000 * 21
+        for track in 0..<4 {
+            let window = (middle..<(middle + 48_000 * 4)).map { tape.read(track: track, frame: $0) }
+            let level = decibels(rms(window) / (Level.reference * 0.7071))
+            #expect(level > -24 && level < 6, "track \(track + 1) sits at \(level) dB")
+        }
+        // During the count-in only the rhythm box is on tape.
+        let countIn = origin + 48_000 * 2
+        let early = (0..<4).map { track in
+            rms((countIn..<(countIn + 48_000)).map { tape.read(track: track, frame: $0) })
+        }
+        #expect(early[0] > 0.01)
+        #expect(early[2] < 0.001 && early[3] < 0.001)
+        // Nothing past the end of the song.
+        let after = origin + 48_000 * 52
+        #expect(rms((after..<(after + 48_000)).map { tape.read(track: 0, frame: $0) }) == 0)
+    }
+}

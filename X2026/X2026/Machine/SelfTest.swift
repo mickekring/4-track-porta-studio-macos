@@ -39,6 +39,121 @@ enum SelfTest {
             meters, lamps, report.isRecording ? "yes" : "no")
     }
 
+    // MARK: - Loopback
+
+    static var isLoopbackRequested: Bool { CommandLine.arguments.contains("--loopback-test") }
+
+    /// Call before the machine is powered on: routes its audio out of and
+    /// back into a virtual loopback device, if one is installed.
+    static func prepareLoopback(machine: Machine) -> Bool {
+        guard let device = AudioHardware.device(named: "BlackHole") else {
+            say("SKIPPED: no loopback device (BlackHole) found")
+            return false
+        }
+        machine.audio.forcedOutputDevice = device
+        machine.audio.forcedInputDevice = device
+        return true
+    }
+
+    /// Measures how well an overdub lines up with what it was played to.
+    ///
+    /// Track 1 gets the rhythm box. Then track 1 is played out of the Mac,
+    /// looped straight back in, and recorded onto track 2 — exactly what
+    /// happens when you overdub, minus the musician. With the round trip
+    /// compensated the two tracks should sit on top of each other.
+    static func runLoopback(machine: Machine, desk: Desk) async {
+        say("loopback: output=\(machine.audio.outputDeviceName)")
+        machine.mechanicalLevel = 0
+        var scratch = machine.library.addBlank(stock: .c46, design: .pop, title: "Loopback test")
+        let leader = scratch.stock.leaderLength * CassetteStandard.framesPerMeter
+        let start = leader + 3 * CassetteStandard.sampleRate
+        scratch.position = start
+        machine.library.update(scratch)
+        defer {
+            if machine.loaded != nil { machine.removeCassette() }
+            if let scratch = machine.library.cassette(withID: scratch.id) { machine.library.discard(scratch) }
+        }
+        do { try machine.insert(scratch) } catch { return say("FAIL: \(error)") }
+
+        // Pass 1: rhythm box → INPUT 1 → track 1.
+        var panel = Panel()
+        panel.noiseReduction = false
+        panel.fader1 = 0.75
+        panel.pan1 = 0
+        panel.master = 0.75
+        panel.recordL = .upper
+        machine.panel = panel
+        machine.audio.patch = JackPatch()
+        machine.audio.patch[0] = .rhythmBox
+        machine.rhythm = RhythmBox.Settings(running: true, tempo: 132, pattern: 7, volume: 0.9)
+        await wait(0.4)
+        await tap(.record, on: machine)
+        await wait(4)
+        await tap(.stop, on: machine)
+        machine.rhythm.running = false
+        await wait(0.3)
+
+        // Ask for the Mac's input (this is where macOS may ask permission).
+        machine.audio.patch[0] = .nothing
+        machine.audio.patch[1] = .deviceChannel(0)
+        var waited = 0.0
+        while machine.audio.roundTripLatency == 0 && waited < 25 {
+            await wait(0.25)
+            waited += 0.25
+        }
+        guard machine.audio.roundTripLatency > 0 else {
+            return say("SKIPPED: audio input is not available (permission not granted?)")
+        }
+        say("input up after \(waited) s; reported round trip \(machine.audio.roundTripLatency) frames = \(String(format: "%.2f", Double(machine.audio.roundTripLatency) / machine.audio.sampleRate * 1000)) ms")
+        await wait(1.0)
+
+        // Pass 2: track 1 → AUX → PHONES → loopback → INPUT 2 → track 2.
+        machine.removeCassette()
+        scratch = machine.library.cassette(withID: scratch.id) ?? scratch
+        scratch.position = start
+        machine.library.update(scratch)
+        do { try machine.insert(scratch) } catch { return say("FAIL: \(error)") }
+        panel = Panel()
+        panel.noiseReduction = false
+        panel.fader2 = 0.75
+        panel.pan2 = 1
+        panel.master = 0.75
+        panel.recordR = .upper
+        panel.aux[0] = 0.8
+        panel.auxSend = 0.6
+        panel.monitor = .aux
+        panel.monitorLevel = 0.45
+        machine.panel = panel
+        await wait(0.4)
+        await tap(.record, on: machine)
+        await wait(4)
+        await tap(.stop, on: machine)
+        await wait(0.3)
+
+        // Compare the two tracks over two seconds in the middle.
+        let origin = Int(start - leader) + 48_000
+        let count = 96_000
+        let reach = 4000
+        let original = machine.debugReadTape(track: 0, from: origin, count: count)
+        let overdub = machine.debugReadTape(track: 1, from: origin - reach, count: count + 2 * reach)
+        guard original.count == count, overdub.count == count + 2 * reach else { return say("FAIL: could not read the tape") }
+        func energy(_ samples: [Float]) -> Float { samples.reduce(0) { $0 + $1 * $1 } }
+        say(String(format: "track 1 rms %.4f, track 2 rms %.4f", (energy(original) / Float(count)).squareRoot(), (energy(overdub) / Float(overdub.count)).squareRoot()))
+        var best = (lag: 0, score: -Float.infinity)
+        for lag in stride(from: -reach, through: reach, by: 1) {
+            var sum: Float = 0
+            var index = 0
+            while index < count {
+                sum += original[index] * overdub[index + reach + lag]
+                index += 3
+            }
+            if sum > best.score { best = (lag, sum) }
+        }
+        let milliseconds = Double(best.lag) / CassetteStandard.sampleRate * 1000
+        say(String(format: "overdub sits %+d tape frames (%+.2f ms) from the track it was played to", best.lag, milliseconds))
+        say(abs(milliseconds) < 1.5 ? "PASS: overdubs line up" : "CHECK: more than 1.5 ms out; Head alignment in Settings can trim this")
+    }
+
     static func run(machine: Machine, desk: Desk) async {
         say("starting; audio running=\(machine.audio.isRunning) rate=\(machine.audio.sampleRate) output=\(machine.audio.outputDeviceName)")
         let savedPanel = machine.panel

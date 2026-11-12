@@ -129,15 +129,19 @@ final class Machine {
     @ObservationIgnored private var ticks = 0
     @ObservationIgnored private let log = Logger(subsystem: "se.mickekring.X2026", category: "machine")
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let remembers: Bool
     @ObservationIgnored private let housekeeping = DispatchQueue(label: "se.mickekring.X2026.tape-housekeeping", qos: .utility)
 
     private static let snapshotKey = "machine.snapshot.v1"
 
     // MARK: - Lifetime
 
-    init(library: TapeLibrary = TapeLibrary(), defaults: UserDefaults = .standard) {
+    /// - Parameter remembers: false for a machine that reads its saved state
+    ///   but never writes it back (test runs, previews, errands).
+    init(library: TapeLibrary = TapeLibrary(), defaults: UserDefaults = .standard, remembers: Bool = true) {
         self.library = library
         self.defaults = defaults
+        self.remembers = remembers
         core = MachineCore()
         audio = AudioHost(core: core)
 
@@ -402,6 +406,14 @@ final class Machine {
         housekeeping.async { medium.prefetch(frames: (frame - behind)..<(frame + ahead)) }
     }
 
+    #if DEBUG
+    /// Reads oxide straight off the loaded cassette, for the self-tests.
+    func debugReadTape(track: Int, from frame: Int, count: Int) -> [Float] {
+        guard let medium else { return [] }
+        return (frame..<(frame + count)).map { medium.read(track: track, frame: $0) }
+    }
+    #endif
+
     // MARK: - Telemetry
 
     /// Latest report from the audio thread.
@@ -466,6 +478,7 @@ final class Machine {
     }
 
     private func save() {
+        guard remembers else { return }
         let snapshot = Snapshot(
             panel: panel, effect: effect, rhythm: rhythm, patch: audio.patch,
             mechanicalLevel: mechanicalLevel, latencyTrim: latencyTrim,

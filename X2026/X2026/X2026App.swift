@@ -1,19 +1,50 @@
 import SwiftUI
 
+/// There is one machine and one window: closing it switches off.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
 @main
 struct X2026App: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var machine: Machine
     @State private var desk: Desk
 
-    /// True when the app is only running to host the unit tests.
-    private static let isHostingTests = NSClassFromString("XCTestCase") != nil
+    /// True when the app is only running to host the unit tests. The test
+    /// bundle is injected after launch, so ask the environment, not the runtime.
+    private static let isHostingTests: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+    }()
+
+    /// True when a debug build was launched just to render the icon.
+    private static var isRunningAnErrand: Bool {
+        #if DEBUG
+        IconArt.isRequested
+        #else
+        false
+        #endif
+    }
+
+    /// Errands and test runs must not change what the real machine remembers.
+    private static var leavesNoTrace: Bool {
+        #if DEBUG
+        isHostingTests || isRunningAnErrand || SelfTest.isRequested || SelfTest.isLoopbackRequested
+        #else
+        isHostingTests
+        #endif
+    }
 
     init() {
-        let machine = Machine()
+        let machine = Machine(remembers: !Self.leavesNoTrace)
         _machine = State(initialValue: machine)
         _desk = State(initialValue: Desk(machine: machine))
-        if !Self.isHostingTests {
+        if !Self.leavesNoTrace {
             FirstRun.stockTheDesk(machine.library)
+            DemoTape.makeIfNeeded(library: machine.library)
         }
     }
 
@@ -25,8 +56,21 @@ struct X2026App: App {
                 DeskView(desk: desk)
                     .frame(minWidth: 906, minHeight: 546)
                     .task {
+                        #if DEBUG
+                        let loopback = SelfTest.isLoopbackRequested && SelfTest.prepareLoopback(machine: machine)
+                        #endif
                         machine.powerOn()
                         #if DEBUG
+                        if loopback {
+                            await SelfTest.runLoopback(machine: machine, desk: desk)
+                            NSApplication.shared.terminate(nil)
+                        } else if SelfTest.isLoopbackRequested {
+                            NSApplication.shared.terminate(nil)
+                        }
+                        if IconArt.isRequested {
+                            IconArt.renderAll()
+                            NSApplication.shared.terminate(nil)
+                        }
                         if SelfTest.isRequested {
                             await SelfTest.run(machine: machine, desk: desk)
                             NSApplication.shared.terminate(nil)

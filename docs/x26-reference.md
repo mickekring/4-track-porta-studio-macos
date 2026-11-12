@@ -120,6 +120,18 @@ MIXER: L, R, (dark), AUX SEND. Under them, four tri-colour arrows (p.8):
   its controls answer (`Desk.focus`).
 - The rhythm box, reverb, master recorder and foot switch on the desk are
   generic stand-ins for the gear the manual tells you to plug in.
+- The machine plays through and records from whatever is chosen in System
+  Settings → Sound, and follows it when it changes. It has no device pickers
+  of its own, and `AudioHost` never sets a device: with a separate input and
+  output the engine runs a private aggregate of the two, and re-asserting a
+  device from the "configuration changed" handler restarts it for ever (the
+  AirPods freeze). Changes are debounced and fused (`restartAfterChange`);
+  a start that fails is tried again by the clock (`retryLater`).
+- Silence is explained in words, because it reads as a broken app
+  (`Machine.trouble`): audio that will not start, with the reason; an input
+  jack the Mac will not let the machine hear, or has no device for. And,
+  once, that a Bluetooth headset drops to hands-free mode while its
+  microphone is open.
 
 ## Working on the code
 
@@ -138,6 +150,14 @@ X2026/X2026/
   running). Xcode's Run, the unit tests and the previews still build to
   DerivedData, because they need a debug build.
 - Tests: `xcodebuild test -project X2026/X2026.xcodeproj -scheme X2026 -destination 'platform=macOS'`
+- **Test runs never work at the owner's desk.** Unit tests, previews, the
+  icon errand and every flag below get `Machine.onScratchDesk()`: factory
+  settings and an empty tape library in a temporary folder
+  (`tmp/x2026-scratch/<uuid>`, removed on quit; strays are swept after a
+  day). They cannot see the owner's cassettes, settings or mixdowns. This is
+  not a nicety: before it existed, a test recorded on the owner's cassette.
+  Any launch argument starting with `--` puts a debug build on a scratch
+  desk (`leavesNoTrace` in `X2026App`), so a new flag is isolated by default.
 - End-to-end run of the real app (debug builds): launch the built binary with
   `--self-test`. It inserts a scratch tape by hand, records the rhythm box,
   rewinds by counter, plays back, fast-forwards to the end and ejects,
@@ -149,8 +169,17 @@ X2026/X2026/
   in the background: the views it clicks are made to accept "first mouse", so
   it needs neither the foreground nor the real pointer.
 - Hardware round trip (debug builds, needs the BlackHole virtual device):
-  `--loopback-test` overdubs track 1 onto track 2 through the Mac's output
-  and input and reports how far apart they land.
+  `--loopback-test` overdubs track 1 onto track 2 out of and back into that
+  device (`AudioHost.loopbackDevice`, the one case where devices are set by
+  hand) and reports how far apart they land. It fails unless track 2 is
+  recognisably track 1, so it cannot pass while listening to something else.
+- A real input (debug builds): `--input-test` plugs the Mac's default input
+  into INPUT 1 and checks that audio settles, the tape runs in real time, the
+  input lands on tape and unplugging lets the microphone go. Run it with the
+  input you care about selected (a Bluetooth headset is the awkward one; it
+  goes into hands-free mode for the half minute the test takes).
+- Mixdown (debug builds): `--mixdown-test` records a demo cassette and mixes
+  fifteen seconds of it to a WAV with the master recorder.
 - Re-render the app icon: launch a debug build with `--render-icon <folder>`
   (inside the app's container) and copy the PNGs into `AppIcon.appiconset`.
 - Cassettes live in the app's container under `Application Support/Tapes`.

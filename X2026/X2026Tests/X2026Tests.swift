@@ -1021,6 +1021,62 @@ struct MachineTests {
         #expect(!third.panel.remix)
     }
 
+    @Test("A machine that does not remember neither reads the owner's saved state nor threads their cassette")
+    func factoryFreshReadsNothing() throws {
+        let suite = "x2026.test.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory.appending(path: "x2026-lib-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // An owner with a cassette in the well, a track armed and a microphone plugged in.
+        let owner = Machine(library: TapeLibrary(root: root), defaults: defaults)
+        let theirs = owner.library.addBlank(stock: .c46, design: .rost, title: "Theirs")
+        try owner.insert(theirs)
+        owner.panel.recordL = .upper
+        owner.audio.patch[0] = .deviceChannel(0)
+        owner.powerOff()
+        #expect(Machine(library: TapeLibrary(root: root), defaults: defaults).loaded?.id == theirs.id)
+
+        // Even handed the same library and settings, a test machine starts from the factory.
+        let visitor = Machine(library: TapeLibrary(root: root), defaults: defaults, remembers: false)
+        #expect(visitor.loaded == nil)
+        #expect(visitor.panel == .readyToPlay)
+        #expect(visitor.audio.patch == JackPatch())
+    }
+
+    @Test("A scratch desk is empty, is not the owner's, and can be cleared away")
+    func scratchDesk() throws {
+        let machine = Machine.onScratchDesk()
+        #expect(machine.library.root != TapeLibrary.ownersRoot)
+        #expect(!machine.library.root.path(percentEncoded: false).hasPrefix(TapeLibrary.ownersRoot.path(percentEncoded: false)))
+        #expect(machine.library.cassettes.isEmpty)
+        #expect(machine.loaded == nil)
+        try machine.insert(machine.library.addBlank(stock: .c46, design: .pop, title: "Scratch"))
+        machine.discardScratchDesk()
+        #expect(!FileManager.default.fileExists(atPath: machine.library.root.path(percentEncoded: false)))
+
+        // Handed a library anywhere else, it deletes nothing.
+        let elsewhere = FileManager.default.temporaryDirectory.appending(path: "x2026-lib-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: elsewhere) }
+        let stranger = Machine(library: TapeLibrary(root: elsewhere), remembers: false)
+        stranger.library.addBlank(stock: .c46, design: .pop, title: "Keep me")
+        stranger.discardScratchDesk()
+        #expect(FileManager.default.fileExists(atPath: elsewhere.path(percentEncoded: false)))
+        #expect(TapeLibrary(root: elsewhere).cassettes.count == 1)
+    }
+
+    @Test("A second cassette does not go in on top of the first: the caller is told")
+    func occupiedWell() throws {
+        let machine = Machine.onScratchDesk()
+        defer { machine.discardScratchDesk() }
+        let first = machine.library.addBlank(stock: .c46, design: .pop, title: "First")
+        let second = machine.library.addBlank(stock: .c46, design: .pop, title: "Second")
+        try machine.insert(first)
+        #expect(throws: Machine.WellOccupied.self) { try machine.insert(second) }
+        #expect(machine.loaded?.id == first.id)
+    }
+
     @Test("Transport keys interlock like a mechanical latch bar")
     func keyInterlock() {
         let machine = Machine.forPreview()

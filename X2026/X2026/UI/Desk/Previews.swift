@@ -1,14 +1,11 @@
 import SwiftUI
 
 extension Machine {
-    /// A machine on a throwaway desk, for Xcode previews: its tapes live in a
-    /// temporary folder and it remembers nothing.
+    /// A machine on a scratch desk with a few cassettes lying on it, for
+    /// Xcode previews.
     static func forPreview(loadTape: Bool = true) -> Machine {
-        let root = FileManager.default.temporaryDirectory
-            .appending(path: "x2026-preview-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let library = TapeLibrary(root: root)
-        let suite = "x2026.preview.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        let machine = Machine.onScratchDesk()
+        let library = machine.library
 
         var demo = library.addBlank(stock: .c60, design: .krom, title: "Summer demos '89")
         demo.position = demo.totalFrames * 0.31
@@ -21,7 +18,6 @@ extension Machine {
         mix.flip()
         library.update(mix)
 
-        let machine = Machine(library: library, defaults: defaults)
         if loadTape, let first = library.cassette(withID: demo.id) {
             try? machine.insert(first)
         }

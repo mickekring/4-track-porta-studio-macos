@@ -86,6 +86,50 @@ Not exercised: Esc, pinch, the ⌘-number shortcuts, and the menus.
 
 Lessons from this round are in `tasks/lessons.md`.
 
+## Round 3 — "recording with AirPods froze the app" (2026-11-12)
+
+- [x] Find the cause: `sample` of the frozen app showed the audio engine
+      restarting for ever (config change → set device → config change).
+- [x] Follow the Mac's own choice of output and input (System Settings →
+      Sound); never set devices from the change handler. Device pickers
+      removed from Settings: they could not work with two devices.
+- [x] Debounce hardware changes; a fuse if they will not settle; a fresh
+      engine when the last input is unplugged, so the microphone is let go.
+- [x] One-time notice that a Bluetooth headset drops to hands-free mode
+      (telephone quality, delay) while its microphone is open.
+- [x] If audio stays down, the machine says why in words.
+- [x] `--input-test`: real default input → settles, tape runs in real time,
+      input is on the tape, unplugging releases it.
+- [x] **Test runs moved off the owner's desk** (found while verifying the
+      above: the tests had recorded on Micke's DEMO cassette). Scratch desk
+      for tests, previews and errands; `insert` throws on an occupied well;
+      the gesture and mixdown tests record a demo of their own.
+- [x] DEMO cassette restored: track 1, 38.6–54.2 s, from a regenerated
+      demo; verified identical to pristine; wound back to 38.6 s.
+- [x] Loopback test made honest: it was hearing the default microphone, not
+      the loop. Both sides are pinned to the loopback device, the comparison
+      is by treble, and it fails unless track 2 really is track 1.
+      Result: +0.5 ms, the same on every run.
+
+### Independent review of the audio rewrite
+
+| Finding | Outcome |
+|---|---|
+| Audio that failed to start was never tried again unless the hardware happened to change | Fixed: retried by the clock (2 s, doubling to 16 s) with a fresh engine |
+| Unplugging the jack did nothing if the input had never come up, leaving a dead engine or a held microphone | Fixed: unplugging the last hardware input always rebuilds |
+| An input that is not there was only logged | Fixed: said in words (`inputMissing`) |
+| A jack left plugged in with microphone access refused: no prompt, no word, on every launch | Fixed: settled at power-on, and explained |
+| No output device fell through at an invented 48 kHz | Fixed: reported as "no audio output", then retried |
+| A hardware change during the fuse's rest cut the rest short | Fixed: changes are ignored while resting |
+| The "no sound" notice could repeat, and advised a step that did nothing | Fixed: once per cause; says to unplug and plug in again |
+| Scratch-desk deletion was guarded by what the folder is not | Fixed: deletes only a folder inside `tmp/x2026-scratch`; tested |
+| A slow restart loop (a second or more per turn) would not blow the fuse | Not done: no such loop has been seen |
+
+Open: in one run of the gesture test two knob drags came up short, at the
+moment the AirPods disconnected from the Mac. Not seen in six further runs,
+and not reproduced by forcing an audio restart in the middle of a drag (which
+is now a check in that test). Cause unknown; possibly the real pointer.
+
 ## Not done / ideas
 
 - [x] Choose input and output devices in Settings

@@ -324,20 +324,44 @@ final class AudioHost {
     /// Frames (at the output rate) a sound takes to go out of the Mac and come back in.
     private(set) var roundTripLatency = 0
     private(set) var problem: String?
+    #if DEBUG
+    /// For the self-test: stands in for audio that will not start.
+    func debugReport(problem text: String?) { problem = text }
+    /// For the self-test: what a change of hardware does, without the wait.
+    func debugRestart() { restartAfterChange() }
+    #endif
+
+    /// True while the input comes from a Bluetooth headset, which macOS
+    /// drops into hands-free mode for as long as its microphone is open.
+    private(set) var inputIsBluetooth = false
+    /// True while a jack is plugged into the Mac's input and the Mac has no
+    /// input the machine can use.
+    private(set) var inputMissing = false
 
     /// What is plugged into the input jacks.
     var patch = JackPatch() {
         didSet {
             guard patch != oldValue else { return }
             context.patch.post(patch)
-            if started && patch.usesDeviceInput && !inputRunning { Task { await bringUpInput() } }
+            guard started else { return }
+            if patch.usesDeviceInput && !inputRunning {
+                Task { await bringUpInput() }
+            } else if oldValue.usesDeviceInput && !patch.usesDeviceInput && inputAuthorised {
+                // Nothing is plugged into the Mac's input any more: let go of
+                // the microphone (a Bluetooth headset gets its good sound back).
+                // Also when the input never came up: the engine may be holding
+                // the device all the same, or be stopped because of it.
+                rebuildEngine()
+                configure()
+            }
         }
     }
 
-    @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private var engine = AVAudioEngine()
     @ObservationIgnored private var source: AVAudioSourceNode?
     @ObservationIgnored private var sink: AVAudioSinkNode?
     @ObservationIgnored private var inputRunning = false
+    @ObservationIgnored private var inputAuthorised = false
     @ObservationIgnored private var started = false
     /// The part of the round trip that is fixed by the hardware: both
     /// devices' reported latencies and the output buffer, in output frames.
@@ -346,43 +370,42 @@ final class AudioHost {
     @ObservationIgnored private var observer: (any NSObjectProtocol)?
     @ObservationIgnored private let log = Logger(subsystem: "se.mickekring.X2026", category: "audio")
 
-    /// Devices to use instead of the system defaults (the loopback self-test sets these).
-    @ObservationIgnored var forcedOutputDevice: AudioDeviceID?
-    @ObservationIgnored var forcedInputDevice: AudioDeviceID?
+    // The engine is left to pick and manage its own devices: it follows the
+    // input and output chosen in macOS's Sound settings. With those on
+    // different devices (which is nearly always: even the built-in microphone
+    // and speakers are two) it runs them through a private aggregate device,
+    // and announces a configuration change when it sets that up.
+    //
+    // Two things learned the hard way:
+    // - Re-asserting a device on every change makes the engine announce
+    //   another change, for ever, with no audio in between. Nothing is ever
+    //   set twice on the same engine.
+    // - Input and output share one I/O unit, so they cannot be pointed at two
+    //   different devices by hand (error -10851). One device for both is
+    //   fine, which is all the loopback self-test needs.
+    @ObservationIgnored private var pinnedDevice: AudioDeviceID?
+    @ObservationIgnored private var pinnedInput: AudioDeviceID?
+    @ObservationIgnored private var bufferRequested: Set<AudioDeviceID> = []
+    @ObservationIgnored private var pendingRestart: Task<Void, Never>?
+    @ObservationIgnored private var recentRestarts: [ContinuousClock.Instant] = []
+    /// True while the fuse has blown and the hardware is being left alone.
+    @ObservationIgnored private var resting = false
+    /// How long to wait before trying again after audio would not start.
+    @ObservationIgnored private var retryDelay = AudioHost.firstRetry
+    private static let firstRetry: Duration = .seconds(2)
+    /// How many times the engine has been (re)started, for the self-tests.
+    @ObservationIgnored private(set) var restartCount = 0
 
-    /// The device chosen in Settings for PHONES, by UID; nil follows the system.
-    var outputUID: String? {
-        didSet {
-            guard outputUID != oldValue else { return }
-            UserDefaults.standard.set(outputUID, forKey: Self.outputKey)
-            if started { configure(withInput: inputRunning) }
-        }
-    }
+    /// One device to use for both directions instead of the system's choice
+    /// (the loopback self-test sets this). Set before `start()`.
+    @ObservationIgnored var loopbackDevice: AudioDeviceID?
 
-    /// The device chosen in Settings for the input jacks, by UID; nil follows the system.
-    var inputUID: String? {
-        didSet {
-            guard inputUID != oldValue else { return }
-            UserDefaults.standard.set(inputUID, forKey: Self.inputKey)
-            refreshInputChannels()
-            if started { configure(withInput: inputRunning) }
-        }
-    }
+    /// The real devices sound goes out of and comes in on, for names and
+    /// latencies (the engine's own device may be an aggregate of the two).
+    private var outputInUse: AudioDeviceID? { loopbackDevice ?? AudioHardware.defaultDevice(input: false) }
+    private var inputInUse: AudioDeviceID? { loopbackDevice ?? AudioHardware.defaultDevice(input: true) }
 
-    private static let outputKey = "audio.output.uid"
-    private static let inputKey = "audio.input.uid"
-
-    private var chosenOutput: AudioDeviceID? {
-        forcedOutputDevice
-            ?? outputUID.flatMap { AudioHardware.device(withUID: $0, input: false) }
-            ?? AudioHardware.defaultDevice(input: false)
-    }
-
-    private var chosenInput: AudioDeviceID? {
-        forcedInputDevice
-            ?? inputUID.flatMap { AudioHardware.device(withUID: $0, input: true) }
-            ?? AudioHardware.defaultDevice(input: true)
-    }
+    private var wantsInput: Bool { patch.usesDeviceInput && inputAuthorised }
 
     /// I/O buffer we ask the hardware for. Small, so playing through the machine feels live.
     static let preferredBufferFrames: UInt32 = 128
@@ -390,8 +413,6 @@ final class AudioHost {
     init(core: MachineCore) {
         self.core = core
         context = RenderContext(core: core)
-        outputUID = UserDefaults.standard.string(forKey: Self.outputKey)
-        inputUID = UserDefaults.standard.string(forKey: Self.inputKey)
         refreshInputChannels()
     }
 
@@ -400,23 +421,31 @@ final class AudioHost {
     /// Powers the machine up.
     func start() {
         started = true
-        let authorised = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        configure(withInput: patch.usesDeviceInput && authorised)
+        inputAuthorised = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         if observer == nil {
             observer = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-            ) { [weak self] _ in
+                forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
+            ) { [weak self] note in
+                let sender = (note.object as AnyObject?).map(ObjectIdentifier.init)
                 MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.log.info("Audio hardware changed; restarting")
-                    self.refreshInputChannels()
-                    self.configure(withInput: self.inputRunning)
+                    guard let self, sender == ObjectIdentifier(self.engine) else { return }
+                    self.hardwareChanged()
                 }
             }
+        }
+        configure()
+        // A jack left plugged into the Mac's input from last time: ask for the
+        // microphone if that was never settled, and note a refusal so that
+        // the silent jack can be explained.
+        if patch.usesDeviceInput && !inputAuthorised {
+            Task { await bringUpInput() }
         }
     }
 
     func stop() {
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        resting = false
         engine.stop()
         isRunning = false
     }
@@ -436,12 +465,13 @@ final class AudioHost {
             return
         }
         microphoneDenied = false
+        inputAuthorised = true
         refreshInputChannels()
-        configure(withInput: true)
+        configure()
     }
 
     func refreshInputChannels() {
-        guard let device = chosenInput else {
+        guard let device = inputInUse else {
             inputChannelNames = []
             inputDeviceName = ""
             return
@@ -452,6 +482,85 @@ final class AudioHost {
             AudioHardware.channelName(of: device, input: true, channel: channel)
                 ?? (count == 1 ? inputDeviceName : "\(inputDeviceName) \(channel + 1)")
         }
+    }
+
+    /// The engine says its hardware changed (a device came or went, the
+    /// sample rate moved, a headset switched mode). These come in bursts, so
+    /// wait for the burst to pass and then start again once.
+    private func hardwareChanged() {
+        guard !resting else { return }
+        pendingRestart?.cancel()
+        pendingRestart = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self else { return }
+            self.restartAfterChange()
+        }
+    }
+
+    private func restartAfterChange() {
+        // A fuse of our own: if restarting keeps provoking another change,
+        // stop chasing it rather than spin for ever with no sound at all.
+        let now = ContinuousClock.now
+        recentRestarts = recentRestarts.filter { now - $0 < .seconds(6) } + [now]
+        guard recentRestarts.count <= 5 else {
+            log.error("Audio hardware will not settle; giving it a rest")
+            engine.stop()
+            isRunning = false
+            problem = "The audio hardware kept changing under the machine, so it has stopped trying for a moment."
+            recentRestarts = []
+            resting = true
+            pendingRestart = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled, let self else { return }
+                self.rebuildEngine()
+                self.configure()
+            }
+            return
+        }
+        log.info("Audio hardware changed; restarting")
+        refreshInputChannels()
+        configure()
+    }
+
+    /// Audio that would not start is tried again by the clock, a little less
+    /// eagerly each time. The cause (a headset half way through changing
+    /// mode, no device plugged in) often clears without the engine ever
+    /// saying so, and this cannot feed the change-restart loop: nothing
+    /// here answers a notification.
+    private func retryLater() {
+        let delay = retryDelay
+        retryDelay = min(retryDelay * 2, .seconds(16))
+        pendingRestart = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.rebuildEngine()
+            self.configure()
+        }
+    }
+
+    /// Throws the engine away and starts with a new one that knows nothing
+    /// of the devices the old one was using.
+    private func rebuildEngine() {
+        pendingRestart?.cancel()
+        engine.stop()
+        if let source { engine.detach(source) }
+        if let sink { engine.detach(sink) }
+        source = nil
+        sink = nil
+        inputRunning = false
+        isRunning = false
+        engine = AVAudioEngine()
+        pinnedDevice = nil
+        pinnedInput = nil
+        bufferRequested = []
+    }
+
+    /// Asks a device for a small buffer, once. A driver that says no (or
+    /// answers with a change notification) is not asked again.
+    private func requestSmallBuffer(on device: AudioDeviceID) {
+        guard bufferRequested.insert(device).inserted else { return }
+        guard AudioHardware.bufferFrames(of: device) != Int(Self.preferredBufferFrames) else { return }
+        AudioHardware.requestBuffer(frames: Self.preferredBufferFrames, on: device)
     }
 
     // MARK: - Engine graph
@@ -475,7 +584,11 @@ final class AudioHost {
         return "first estimate \(estimatedRoundTrip) frames; input is \(String(format: "%.2f", Double(micros) / 1000)) ms old when used, plus \(hardwareRoundTrip) frames of hardware"
     }
 
-    private func configure(withInput wantInput: Bool) {
+    private func configure() {
+        // Whatever restart was waiting is overtaken by this one.
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        resting = false
         engine.stop()
         if let source { engine.detach(source) }
         if let sink { engine.detach(sink) }
@@ -488,18 +601,26 @@ final class AudioHost {
         context.ring.configure(channels: 0, inputRate: 48_000, outputRate: 48_000, targetFill: 256)
         context.forgetLoop()
         hardwareRoundTrip = 0
+        restartCount += 1
+        var stage = "choosing the output device"
 
         do {
-            let wantedOutput = chosenOutput
-            let outputDevice = try engine.outputNode.withAUAudioUnit { unit in
-                if let wantedOutput, unit.deviceID != wantedOutput { try unit.setDeviceID(wantedOutput) }
-                return unit.deviceID
+            if let loopbackDevice, pinnedDevice != loopbackDevice {
+                try engine.outputNode.withAUAudioUnit { try $0.setDeviceID(loopbackDevice) }
+                pinnedDevice = loopbackDevice
             }
-            AudioHardware.requestBuffer(frames: Self.preferredBufferFrames, on: outputDevice)
-            outputDeviceName = AudioHardware.name(of: outputDevice)
+            // What the engine is actually driving: the device itself, or its
+            // private aggregate of the input and output devices.
+            let engineOutput = engine.outputNode.withAUAudioUnit { $0.deviceID }
+            let realOutput = outputInUse ?? engineOutput
+            requestSmallBuffer(on: engineOutput)
+            outputDeviceName = AudioHardware.name(of: realOutput)
 
             let hardwareFormat = engine.outputNode.inputFormat(forBus: 0)
-            let rate = hardwareFormat.sampleRate > 0 ? hardwareFormat.sampleRate : 48_000
+            guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+                throw NoDevice(what: "The Mac has no audio output to play through.")
+            }
+            let rate = hardwareFormat.sampleRate
             sampleRate = rate
             core.prepare(sampleRate: rate)
             context.rhythm.prepare(sampleRate: rate)
@@ -512,57 +633,76 @@ final class AudioHost {
             guard let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else {
                 throw CocoaError(.featureUnsupported)
             }
+            stage = "connecting the machine to the output"
             let source = context.makeSourceNode(format: format)
             engine.attach(source)
             try engine.connectNode(source, to: engine.mainMixerNode, format: format)
             self.source = source
 
             var inputLatency = 0
-            if wantInput {
-                let wantedInput = chosenInput
-                let inputDevice = try engine.inputNode.withAUAudioUnit { unit in
-                    if let wantedInput, unit.deviceID != wantedInput { try unit.setDeviceID(wantedInput) }
-                    return unit.deviceID
+            var bluetooth = false
+            if wantsInput, let realInput = inputInUse {
+                stage = "opening the input device"
+                if let loopbackDevice, pinnedInput != loopbackDevice {
+                    // The loopback test listens to the device it plays into,
+                    // not to whatever microphone the Mac has chosen.
+                    try engine.inputNode.withAUAudioUnit { try $0.setDeviceID(loopbackDevice) }
+                    pinnedInput = loopbackDevice
                 }
-                AudioHardware.requestBuffer(frames: Self.preferredBufferFrames, on: inputDevice)
+                let engineInput = engine.inputNode.withAUAudioUnit { $0.deviceID }
+                requestSmallBuffer(on: engineInput)
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 if inputFormat.channelCount > 0 && inputFormat.sampleRate > 0 {
-                    let inputBuffer = AudioHardware.bufferFrames(of: inputDevice)
-                    let outputBuffer = AudioHardware.bufferFrames(of: outputDevice)
+                    let inputBuffer = AudioHardware.bufferFrames(of: engineInput)
+                    let outputBuffer = AudioHardware.bufferFrames(of: engineOutput)
                     // Enough in hand to ride out both devices delivering in lumps.
                     let scale = rate / inputFormat.sampleRate
                     let target = Int(Double(inputBuffer) * 1.25) + Int(Double(outputBuffer) / scale * 0.5) + 48
                     context.ring.configure(
                         channels: Int(inputFormat.channelCount),
                         inputRate: inputFormat.sampleRate, outputRate: rate, targetFill: target)
+                    stage = "connecting the input"
                     let sink = context.makeSinkNode()
                     engine.attach(sink)
                     try engine.connectNode(engine.inputNode, to: sink, format: inputFormat)
                     self.sink = sink
                     inputRunning = true
-                    let inputFrames = AudioHardware.hardwareLatency(of: inputDevice, input: true)
-                        + inputBuffer / 2 + target
-                    inputLatency = Int((Double(inputFrames) * scale).rounded())
-                    hardwareRoundTrip = Int((Double(AudioHardware.hardwareLatency(of: inputDevice, input: true)) * scale).rounded())
-                        + AudioHardware.hardwareLatency(of: outputDevice, input: false) + outputBuffer
+                    bluetooth = AudioHardware.isBluetooth(realInput)
+                    // Latencies are the real devices' own; an aggregate
+                    // standing in for them reports little or nothing.
+                    let inputHardware = AudioHardware.hardwareLatency(of: realInput, input: true)
+                    let outputHardware = AudioHardware.hardwareLatency(of: realOutput, input: false)
+                    inputLatency = Int((Double(inputHardware + inputBuffer / 2 + target) * scale).rounded())
+                    hardwareRoundTrip = Int((Double(inputHardware) * scale).rounded()) + outputHardware + outputBuffer
                 } else {
                     log.notice("No usable input device")
                 }
             }
+            inputIsBluetooth = bluetooth
+            inputMissing = wantsInput && !inputRunning
 
-            let outputLatency = AudioHardware.hardwareLatency(of: outputDevice, input: false)
-                + AudioHardware.bufferFrames(of: outputDevice)
+            let outputLatency = AudioHardware.hardwareLatency(of: realOutput, input: false)
+                + AudioHardware.bufferFrames(of: engineOutput)
             roundTripLatency = inputRunning ? inputLatency + outputLatency : 0
             estimatedRoundTrip = roundTripLatency
 
+            stage = "starting the audio engine (\(Int(rate)) Hz)"
             engine.prepare()
             try engine.start()
             isRunning = true
+            retryDelay = Self.firstRetry
             log.info("Audio running at \(rate, format: .fixed(precision: 0)) Hz, round trip \(self.roundTripLatency) frames, input \(self.inputRunning)")
         } catch {
             isRunning = false
-            problem = error.localizedDescription
-            log.error("Could not start audio: \(error)")
+            inputMissing = false
+            problem = "Audio would not start while \(stage): \(error.localizedDescription)"
+            log.error("Could not start audio while \(stage, privacy: .public): \(error)")
+            retryLater()
         }
+    }
+
+    private struct NoDevice: LocalizedError {
+        let what: String
+        var errorDescription: String? { what }
     }
 }

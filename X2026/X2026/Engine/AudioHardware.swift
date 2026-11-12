@@ -100,20 +100,18 @@ nonisolated enum AudioHardware {
         return total
     }
 
+    /// True for a device that reaches the Mac over Bluetooth.
+    static func isBluetooth(_ device: AudioDeviceID) -> Bool {
+        guard let transport = number(device, kAudioDevicePropertyTransportType) else { return false }
+        return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
     static func sampleRate(of device: AudioDeviceID) -> Double {
         var where_ = address(kAudioDevicePropertyNominalSampleRate)
         var value = 0.0
         var size = UInt32(MemoryLayout<Double>.size)
         guard AudioObjectGetPropertyData(device, &where_, 0, nil, &size, &value) == noErr else { return 0 }
         return value
-    }
-
-    /// A sound device as offered in Settings.
-    struct Device: Identifiable, Hashable, Sendable {
-        var id: AudioDeviceID
-        var name: String
-        /// Stays the same across restarts and re-plugging, unlike `id`.
-        var uid: String
     }
 
     private static func allDevices() -> [AudioDeviceID] {
@@ -124,18 +122,6 @@ nonisolated enum AudioHardware {
         var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
         guard AudioObjectGetPropertyData(system, &where_, 0, nil, &size, &devices) == noErr else { return [] }
         return devices
-    }
-
-    /// Every device that has inputs (or outputs).
-    static func devices(input: Bool) -> [Device] {
-        allDevices()
-            .filter { channelCount(of: $0, input: input) > 0 }
-            .map { Device(id: $0, name: name(of: $0), uid: string($0, kAudioDevicePropertyDeviceUID) ?? "") }
-            .filter { !$0.uid.isEmpty }
-    }
-
-    static func device(withUID uid: String, input: Bool) -> AudioDeviceID? {
-        devices(input: input).first { $0.uid == uid }?.id
     }
 
     /// Looks a device up by (part of) its name. Used by the loopback self-test.

@@ -147,6 +147,10 @@ final class Machine {
     @ObservationIgnored private var ticks = 0
     @ObservationIgnored private var lastReport = Telemetry()
     @ObservationIgnored private var explainedFeedback = false
+    @ObservationIgnored private var explainedBluetooth = false
+    @ObservationIgnored private var explainedTroubles: Set<String> = []
+    @ObservationIgnored private var troubleSeen: String?
+    @ObservationIgnored private var silentTicks = 0
     /// Room a take needs before RECORD is allowed: about five minutes of four-track.
     private static let roomToRecord: Int64 = 150_000_000
     @ObservationIgnored private let log = Logger(subsystem: "se.mickekring.X2026", category: "machine")
@@ -157,11 +161,14 @@ final class Machine {
     private static let snapshotKey = "machine.snapshot.v1"
     /// Set once the owner has been told what the REMIX howl is. Once is enough.
     private static let explainedFeedbackKey = "machine.explained.feedback"
+    private static let explainedBluetoothKey = "machine.explained.bluetooth"
 
     // MARK: - Lifetime
 
-    /// - Parameter remembers: false for a machine that reads its saved state
-    ///   but never writes it back (test runs, previews, errands).
+    /// - Parameter remembers: false for a machine straight from the factory
+    ///   that neither reads saved state nor writes any (test runs, previews,
+    ///   errands). Give such a machine a library of its own as well: see
+    ///   `onScratchDesk()`.
     init(library: TapeLibrary = TapeLibrary(), defaults: UserDefaults = .standard, remembers: Bool = true) {
         self.library = library
         self.defaults = defaults
@@ -169,7 +176,7 @@ final class Machine {
         core = MachineCore()
         audio = AudioHost(core: core)
 
-        let snapshot = Snapshot.load(from: defaults)
+        let snapshot = remembers ? Snapshot.load(from: defaults) : nil
         var restored = snapshot?.panel ?? .readyToPlay
         if snapshot != nil, (snapshot?.factoryRevision ?? 1) < Snapshot.currentRevision {
             // Panels saved before the machine shipped set up for mixdown were
@@ -198,6 +205,7 @@ final class Machine {
             }
         }
         explainedFeedback = remembers && defaults.bool(forKey: Self.explainedFeedbackKey)
+        explainedBluetooth = remembers && defaults.bool(forKey: Self.explainedBluetoothKey)
         checkDisk()
         post()
     }
@@ -226,6 +234,41 @@ final class Machine {
         medium?.flush(wait: true)
         save()
     }
+
+    /// A machine on a desk of its own, for test runs, previews and errands:
+    /// factory settings, and an empty tape library in a temporary folder.
+    /// Nothing on it is the owner's, so nothing of the owner's can be played
+    /// over, wound on or thrown away by whatever is run on it.
+    static func onScratchDesk() -> Machine {
+        let files = FileManager.default
+        let desks = scratchDesks
+        // Desks left behind by runs that were killed before they could tidy up.
+        let left = (try? files.contentsOfDirectory(at: desks, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        for desk in left {
+            let made = (try? desk.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+            if made < Date.now.addingTimeInterval(-86_400) { try? files.removeItem(at: desk) }
+        }
+        let root = desks.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        return Machine(library: TapeLibrary(root: root), remembers: false)
+    }
+
+    /// The folder scratch desks are made in.
+    private static var scratchDesks: URL {
+        FileManager.default.temporaryDirectory.appending(path: "x2026-scratch", directoryHint: .isDirectory)
+    }
+
+    /// Clears a scratch desk away. Deletes nothing but a folder made by
+    /// `onScratchDesk()`: never the owner's library, whatever it is handed.
+    func discardScratchDesk() {
+        let parent = library.root.deletingLastPathComponent().standardizedFileURL
+        guard !remembers, parent == Self.scratchDesks.standardizedFileURL,
+              UUID(uuidString: library.root.lastPathComponent) != nil else { return }
+        if loaded != nil { removeCassette() }
+        try? FileManager.default.removeItem(at: library.root)
+    }
+
+    /// Thrown by `insert` when the well already holds a cassette.
+    struct WellOccupied: Error {}
 
     // MARK: - Control frames
 
@@ -263,6 +306,45 @@ final class Machine {
         explainedFeedback = true
         if remembers { defaults.set(true, forKey: Self.explainedFeedbackKey) }
         notice = "Track \(track + 1) is armed while SUB GAIN \(track + 3) is turned toward TRK \(track + 1) and the switch is on REMIX. That sends the track straight back into itself: the howl the manual warns about. Turn SUB GAIN \(track + 3) to 0, or switch to NORM while you record."
+    }
+
+    /// Says once what a Bluetooth headset does when its microphone opens,
+    /// since it sounds like something has gone wrong.
+    private func explainBluetooth() {
+        guard audio.inputIsBluetooth, !explainedBluetooth, notice == nil else { return }
+        explainedBluetooth = true
+        if remembers { defaults.set(true, forKey: Self.explainedBluetoothKey) }
+        notice = "Your input is a Bluetooth headset. While its microphone is open, macOS switches the headset to hands-free mode: telephone-quality sound in both directions, and a noticeable delay before you hear yourself. That is the headset, not the machine. For recording while you listen, use wired headphones, or choose the Mac's own microphone as the input in System Settings → Sound. If overdubs land early or late, Head alignment in Settings trims them."
+    }
+
+    /// Why the machine, or a jack on it, is silent when it should not be.
+    private var trouble: String? {
+        if let problem = audio.problem {
+            return "The machine has no sound at the moment, so the tape will not move. \(problem)\n\nIt keeps trying. Choosing the output and input again in System Settings → Sound often settles it."
+        }
+        guard audio.patch.usesDeviceInput else { return nil }
+        if audio.microphoneDenied {
+            return "That input jack is silent: the X-2026 is not allowed to use the Mac's audio inputs. Allow it under System Settings → Privacy & Security → Microphone, then unplug the jack and plug it in again."
+        }
+        if audio.inputMissing {
+            return "That input jack is silent: the Mac has no audio input the machine can use just now. Check the input in System Settings → Sound, then unplug the jack and plug it in again."
+        }
+        return nil
+    }
+
+    /// A machine with no audio looks like an app that has frozen: the keys
+    /// go down and nothing moves. If that lasts a second or two, say why,
+    /// once per cause.
+    private func explainSilence() {
+        let trouble = trouble
+        if trouble != troubleSeen {
+            troubleSeen = trouble
+            silentTicks = 0
+        }
+        guard let trouble else { return }
+        silentTicks += 1
+        guard silentTicks >= 45, notice == nil, explainedTroubles.insert(trouble).inserted else { return }
+        notice = trouble
     }
 
     private func soundPanelChange(from old: Panel) {
@@ -383,9 +465,11 @@ final class Machine {
 
     // MARK: - Cassettes
 
-    /// Puts a cassette on the spindles. The lid must be open and the well empty.
+    /// Puts a cassette on the spindles. Throws if there is one in the well
+    /// already: whoever asked must not go on to play or record believing
+    /// their cassette went in.
     func insert(_ cassette: Cassette) throws {
-        guard loaded == nil else { return }
+        guard loaded == nil else { throw WellOccupied() }
         try thread(cassette)
         core.sounds.push(.cassetteIn)
         saveSoon()
@@ -463,8 +547,10 @@ final class Machine {
     }
 
     private func checkDisk() {
-        let values = try? library.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        let free = values?.volumeAvailableCapacityForImportantUsage ?? .max
+        // The plain figure, not the "for important usage" one: that asks the
+        // system what it could purge and costs tens of milliseconds.
+        let values = try? library.root.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        let free = Int64(values?.volumeAvailableCapacity ?? .max)
         let full = free < Self.roomToRecord
         if full != diskFull {
             diskFull = full
@@ -505,7 +591,10 @@ final class Machine {
         lastReport = report
         ticks += 1
         audio.refineLatency()
-        if ticks % 60 == 0 { checkDisk() }
+        // While a take is running, keep an eye on the room left for it.
+        if isRecording && ticks % 150 == 0 { checkDisk() }
+        explainBluetooth()
+        explainSilence()
 
         if report.autoStopCount != seenAutoStops {
             seenAutoStops = report.autoStopCount

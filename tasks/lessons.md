@@ -52,3 +52,99 @@ could not be seen or heard.
    window is frontmost will fail (or steal focus) the moment the owner is at
    the keyboard. The gesture test now runs with click-through in the
    background.
+
+## 2026-11-12 — "I tried recording with my AirPods, but the app just froze"
+
+**What was reported:** patching the AirPods' microphone into an input and
+pressing RECORD left a dead machine: no tape, no counter, no meters.
+
+**What was actually wrong:** my own code, not the AirPods. I had added output
+and input device pickers nobody asked for. To honour them, every time the
+audio engine said "the hardware changed" the handler set the device again —
+which makes the engine say "the hardware changed". With an input and an
+output that are different devices (any headset, any normal Mac) that never
+ends, so audio never started. The pickers could not even work: one engine has
+one I/O unit, and pinning two different devices by hand fails outright.
+I had only ever tested input on a loopback device that is its own output.
+
+### Rules
+
+8. **A handler for "X changed" must not do anything that causes X to change.**
+   Read what the system settled on; do not re-assert what you wanted. Any
+   such handler also gets a debounce and a fuse, so that a loop that slips
+   through costs four seconds, not the session.
+
+9. **Test the set-up the owner has, not the one that is convenient.** Input
+   and output on different devices is the normal case. A Bluetooth headset is
+   a common one and behaves unlike everything else (it changes sample rate
+   and mode when its microphone opens). `--input-test` now exercises whatever
+   the Mac's real default input is.
+
+10. **Do not add what was not asked for** — least of all untested. The device
+    pickers were my idea, were never tried with two devices, and broke the one
+    thing the machine is for. macOS already has a place to choose devices.
+
+11. **"Frozen" means: take a `sample` of the process first.** One minute of
+    evidence showed the engine's queue going round the same four frames. No
+    theory needed.
+
+12. **A machine that cannot run must say why.** Nothing told Micke that audio
+    had not started; the keys went down and nothing moved, which reads as a
+    frozen app. If audio stays down the machine now says so in words, with the
+    reason (rule 5 again, for faults instead of faithfulness).
+
+## 2026-11-12 — my tests recorded on Micke's DEMO cassette
+
+Nobody reported this; I found it while chasing a test result that made no
+sense, and it is the worst mistake in the project so far.
+
+**What happened:** the debug self-tests ran the real app on the real desk.
+The machine came up with the cassette Micke had left in the well, and the
+tests' "insert my scratch tape" silently did nothing when the well was
+occupied. One `--input-test` and three `--loopback-test` runs pressed RECORD
+on his DEMO cassette: track 1 from 38.6 s to 54.2 s was recorded over, and the
+tape left wound on. On a machine whose whole point is that there is no undo.
+(It could be put right only because the demo is generated and bit-for-bit
+reproducible, and because a comparison showed nothing else on the tape
+differed. Anything he had played himself would have been gone.)
+
+### Rules
+
+13. **Tests never work at the owner's desk.** A test run gets its own tape
+    library in a temporary folder and a machine with factory settings
+    (`Machine.onScratchDesk()`); it cannot see the owner's cassettes, panel,
+    patch or mixdowns. "Put it back afterwards" is not isolation: it fails
+    exactly when the test fails.
+
+14. **A function that cannot do what it was asked says so.** `insert` returned
+    quietly when the well was occupied, and the caller went on to press
+    RECORD. It throws now. Before a destructive step, check the precondition
+    you are relying on (is the cassette in the well *mine*?).
+
+15. **An absurd result is a finding, not noise.** "track 1 rms 0.0000" after
+    recording four seconds of drums was the tape telling me the drums had gone
+    somewhere else. Three runs went by before I asked where.
+
+16. **Do not explain an oddity with a guess about what the user did.** I put
+    the gesture test's failures down to "Micke must have changed his demo
+    tape". He had not; my harness was reading his settings. Check before
+    attributing anything to the person (rule 6, again).
+
+17. **Prove the owner's data is untouched.** App-level test runs are
+    bracketed by a fingerprint (checksums and times) of the tapes, the
+    settings and the mixdowns folder; the diff must be empty.
+
+18. **A measurement must prove it measured the thing.** After the audio
+    rewrite the loopback test was listening to the AirPods' microphone, not
+    to the loop, and still printed "PASS: overdubs line up" once: it took the
+    best of a field of meaningless correlation peaks inside its ±5 ms window.
+    It now fails unless track 2 is recognisably track 1 (one peak that stands
+    alone, and a likeness figure), and compares treble so the bass drum's
+    tone cannot line up a period out. A test that cannot fail when its
+    subject is missing is not a test.
+
+19. **Have changed code read cold by someone who did not write it.** The
+    review of the audio rewrite found a dead end I had built (audio that
+    failed to start once was never tried again, under a notice that said it
+    would be) and a refusal of the microphone that nothing reported.
+

@@ -16,8 +16,11 @@ final class TapeLibrary {
 
     static let packageExtension = "x2026tape"
 
+    /// Where the owner's cassettes are kept.
+    static var ownersRoot: URL { URL.applicationSupportDirectory.appending(path: "Tapes", directoryHint: .isDirectory) }
+
     init(root: URL? = nil) {
-        self.root = root ?? URL.applicationSupportDirectory.appending(path: "Tapes", directoryHint: .isDirectory)
+        self.root = root ?? Self.ownersRoot
         try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         reload()
     }

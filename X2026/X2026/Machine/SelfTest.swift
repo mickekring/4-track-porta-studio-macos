@@ -133,11 +133,13 @@ enum SelfTest {
             try? await Task.sleep(for: .seconds(0.15))
         }
 
-        func drag(from start: CGPoint, to end: CGPoint) async {
+        /// - Parameter midway: something to have happen half way through the drag.
+        func drag(from start: CGPoint, to end: CGPoint, midway: (() -> Void)? = nil) async {
             send(.leftMouseDown, at: start)
             for step in 1...14 {
                 try? await Task.sleep(for: .milliseconds(16))
                 send(.leftMouseDragged, at: Ease.mix(start, end, Double(step) / 14))
+                if step == 7 { midway?() }
             }
             try? await Task.sleep(for: .milliseconds(30))
             send(.leftMouseUp, at: end)
@@ -159,10 +161,8 @@ enum SelfTest {
         machine.mechanicalLevel = 0
         machine.panel = .readyToPlay
         desk.focus = nil
-        if machine.loaded != nil {
-            desk.eject()
-            await idle(desk)
-        }
+        // A demo cassette for the mixing part, recorded while the rest goes on.
+        let recording = Task { try await DemoTape.make(in: machine.library) }
         let finger = GhostFinger(window: window, desk: desk)
         let origin = Desk.machineOrigin
         func onMachine(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: origin.x + x, y: origin.y + y) }
@@ -266,13 +266,10 @@ enum SelfTest {
         }
 
         // --- A cassette, from the desk ---------------------------------------------
-        guard let demo = machine.library.cassettes.first(where: { $0.title == DemoTape.title }) else {
-            say("SKIPPED: no demo cassette on the desk, so nothing to mix")
-            return say(failures == 0 ? "PASS: every gesture reached the machine" : "\(failures) gesture check(s) failed")
+        guard let demo = try? await recording.value else {
+            return say("FAIL: could not record a demo cassette to mix")
         }
-        // Wherever the owner left the tape, start a few seconds into the song
-        // so there is music under the head; it is put back afterwards.
-        let leftAt = demo.position
+        // Start a few seconds into the song, so there is music under the head.
         var cued = demo
         cued.position = demo.stock.leaderLength * CassetteStandard.framesPerMeter + 6 * CassetteStandard.sampleRate
         machine.library.update(cued)
@@ -328,6 +325,15 @@ enum SelfTest {
         let back = await lineOut()
         check("turn it back up toward TRK: it returns", back.right > hardRight.right * 0.5, String(format: "gain %.2f, R %.2f", machine.panel.subGain[0], back.right))
 
+        // The audio hardware changing under a knob that is being turned
+        // (a headset taken off, say) must not make the knob let go.
+        let pan4 = onMachine(Layout.channelX[3], Layout.panY)
+        let restarts = machine.audio.restartCount
+        await finger.drag(from: pan4, to: CGPoint(x: pan4.x, y: pan4.y + 62)) { machine.audio.debugRestart() }
+        check("a knob keeps turning through an audio restart", machine.panel.subPan[1] < 0.02 && machine.audio.restartCount > restarts,
+              String(format: "pan %.2f, %d restart(s)", machine.panel.subPan[1], machine.audio.restartCount - restarts))
+        await wait(0.6)
+
         let masterCap = onMachine(Layout.masterX, Layout.faderBottom - CGFloat(machine.panel.master) * Layout.faderTravel)
         await finger.drag(from: masterCap, to: CGPoint(x: masterCap.x, y: masterCap.y + 40))
         await wait(0.5)
@@ -336,7 +342,7 @@ enum SelfTest {
 
         await finger.click(onMachine(Layout.keyX[TransportKey.stop.rawValue], Layout.keyTop + Layout.keySize.height / 2))
 
-        // Take the tape out again, from up close, and leave it as it was found.
+        // Take the tape out again, from up close.
         await finger.click(lid)
         await idle(desk)
         await finger.click(onMachine(Layout.cassette.x + 50, Layout.cassette.y + 30))
@@ -344,10 +350,6 @@ enum SelfTest {
         check("click the cassette in the open well takes it out", machine.loaded == nil)
         await finger.click(onMachine(Layout.lid.midX, Layout.lid.minY + 5))
         await idle(desk)
-        if var restored = machine.library.cassette(withID: demo.id) {
-            restored.position = leftAt
-            machine.library.update(restored)
-        }
 
         say(failures == 0 ? "PASS: every gesture reached the machine" : "\(failures) gesture check(s) failed")
     }
@@ -360,15 +362,10 @@ enum SelfTest {
     /// minute and reports on the file that comes out.
     static func runMixdown(machine: Machine, desk: Desk) async {
         await wait(1.0)
-        guard let demo = machine.library.cassettes.first(where: { $0.title == DemoTape.title }) else {
-            return say("SKIPPED: no demo cassette on the desk yet")
+        guard let demo = try? await DemoTape.make(in: machine.library) else {
+            return say("FAIL: could not record a demo cassette to mix")
         }
         machine.mechanicalLevel = 0
-        if machine.loaded != nil {
-            desk.eject()
-            await idle(desk)
-        }
-        let leftAt = demo.position
         desk.insert(demo)
         await idle(desk)
         guard machine.loaded?.id == demo.id else { return say("FAIL: demo cassette did not load") }
@@ -377,10 +374,8 @@ enum SelfTest {
         panel.remix = true
         panel.monitorLevel = 0
         machine.panel = panel
-        let folder = URL.documentsDirectory.appending(path: "Mixdowns", directoryHint: .isDirectory)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = folder.appending(path: "self-test mix.wav")
-        try? FileManager.default.removeItem(at: url)
+        // On the scratch desk, not among the owner's mixdowns.
+        let url = machine.library.root.appending(path: "self-test mix.wav")
         let recorder = machine.audio.context.masterRecorder
         do { try recorder.begin(url: url) } catch { return say("FAIL: master recorder would not start: \(error)") }
         await tap(.play, on: machine)
@@ -392,16 +387,110 @@ enum SelfTest {
         }
         await tap(.stop, on: machine)
         let finished = recorder.end()
-        say(String(format: "mixed 15 s; loudest LINE OUT %.1f dB; file %@", Level.decibels(loudest), finished?.path(percentEncoded: false) ?? "none"))
-
-        // Put the demo back the way it was found.
+        let bytes = finished.flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize } ?? 0
+        say(String(format: "mixed 15 s; loudest LINE OUT %.1f dB; a WAV of %.1f MB", Level.decibels(loudest), Double(bytes) / 1_048_576))
         desk.eject()
         await idle(desk)
-        if var back = machine.library.cassette(withID: demo.id) {
-            back.position = leftAt
-            machine.library.update(back)
+        say(loudest > 0.1 && bytes > 4_000_000 ? "PASS: the demo mixes down to a file" : "FAIL: the mixdown is silent or missing")
+    }
+
+    // MARK: - Real input
+
+    static var isInputRequested: Bool { CommandLine.arguments.contains("--input-test") }
+
+    /// Plugs one of the Mac's real inputs into INPUT 1 and checks that the
+    /// machine carries on: audio settles instead of restarting for ever, the
+    /// tape moves at the right speed, and what the microphone hears is
+    /// recorded. Then unplugs it and checks the microphone is let go.
+    static func runInput(machine: Machine, desk: Desk) async {
+        machine.mechanicalLevel = 0
+        await wait(1.5)
+        say("before: running=\(machine.audio.isRunning) rate=\(Int(machine.audio.sampleRate)) out=\(machine.audio.outputDeviceName) restarts=\(machine.audio.restartCount) problem=\(machine.audio.problem ?? "none")")
+
+        var scratch = machine.library.addBlank(stock: .c46, design: .pop, title: "Input test")
+        let leader = scratch.stock.leaderLength * CassetteStandard.framesPerMeter
+        scratch.position = leader + 3 * CassetteStandard.sampleRate
+        machine.library.update(scratch)
+        defer {
+            if machine.loaded != nil { machine.removeCassette() }
+            if let scratch = machine.library.cassette(withID: scratch.id) { machine.library.discard(scratch) }
         }
-        say("done")
+        do { try machine.insert(scratch) } catch { return say("FAIL: \(error)") }
+
+        var panel = Panel()
+        panel.fader1 = 0.75
+        panel.pan1 = 0
+        panel.master = 0.75
+        panel.recordL = .upper
+        panel.monitorLevel = 0
+        machine.panel = panel
+        machine.notice = nil
+
+        // Plug it in.
+        let restartsBefore = machine.audio.restartCount
+        machine.audio.patch = JackPatch()
+        machine.audio.patch[0] = .deviceChannel(0)
+        var waited = 0.0
+        while machine.audio.roundTripLatency == 0 && waited < 20 {
+            await wait(0.25)
+            waited += 0.25
+        }
+        guard machine.audio.roundTripLatency > 0 else {
+            return say("SKIPPED: no audio input came up (permission? no device?) running=\(machine.audio.isRunning) restarts=\(machine.audio.restartCount) denied=\(machine.audio.microphoneDenied) problem=\(machine.audio.problem ?? "none")")
+        }
+        say("input \(machine.audio.inputDeviceName) up after \(waited) s")
+
+        // Let it settle, then watch for a while: it must stop restarting.
+        await wait(4)
+        let settled = machine.audio.restartCount
+        await wait(5)
+        let later = machine.audio.restartCount
+        say("restarts: \(settled - restartsBefore) to bring the input up, \(later - settled) in the five seconds after; running=\(machine.audio.isRunning) rate=\(Int(machine.audio.sampleRate)) bluetooth=\(machine.audio.inputIsBluetooth) round trip \(String(format: "%.1f", Double(machine.audio.roundTripLatency) / machine.audio.sampleRate * 1000)) ms")
+        var failures = 0
+        func check(_ name: String, _ passed: Bool, _ detail: String = "") {
+            if !passed { failures += 1 }
+            say("\(passed ? "ok  " : "FAIL") \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+        }
+        check("audio settles with a real input plugged in", machine.audio.isRunning && later == settled, "\(later - settled) restarts while idle")
+        if machine.notice != nil {
+            say("notice shown: \(machine.notice?.prefix(60) ?? "")…")
+            machine.notice = nil
+        }
+
+        // The machine is alive: the tape moves at 1⅞ ips in real time.
+        let from = machine.telemetry.position
+        await tap(.record, on: machine)
+        // Timed once the capstan is up to speed, position and clock read together.
+        await wait(0.6)
+        let rolling = machine.telemetry.position
+        let clock = ContinuousClock.now
+        await wait(3)
+        let moved = (machine.telemetry.position - rolling) / CassetteStandard.sampleRate
+        let took = Double((ContinuousClock.now - clock) / .seconds(1))
+        check("the tape runs in real time", abs(moved / took - 1) < 0.02, String(format: "%.3f s of tape in %.3f s", moved, took))
+        check("the lamp is red", machine.telemetry.lamps[0] == TrackLamp.recording.rawValue)
+        await tap(.stop, on: machine)
+        await wait(0.5)
+
+        // What the microphone heard is on the tape (room noise will do).
+        let start = Int(from - leader)
+        let take = machine.debugReadTape(track: 0, from: start + 24_000, count: 72_000)
+        let level = (take.reduce(0) { $0 + $1 * $1 } / Float(max(1, take.count))).squareRoot()
+        check("the input was recorded", level > 0.00002, String(format: "rms %.5f (%.0f dB below the 0 mark)", level, -20 * log10(max(level, 1e-9) / (Level.reference * 0.7071))))
+
+        // Unplug: the microphone is released and the machine keeps running.
+        machine.audio.patch[0] = .nothing
+        await wait(3)
+        let afterUnplug = machine.audio.restartCount
+        await wait(3)
+        check("unplugging lets go of the input and settles", machine.audio.isRunning && machine.audio.roundTripLatency == 0 && machine.audio.restartCount == afterUnplug,
+              "rate=\(Int(machine.audio.sampleRate)) restarts while idle \(machine.audio.restartCount - afterUnplug)")
+        let rest = machine.telemetry.position
+        await tap(.play, on: machine)
+        await wait(1.5)
+        check("and still plays", machine.telemetry.position - rest > 48_000)
+        await tap(.stop, on: machine)
+        say(failures == 0 ? "PASS: recording from a real input works" : "\(failures) input check(s) failed")
     }
 
     // MARK: - Loopback
@@ -415,8 +504,7 @@ enum SelfTest {
             say("SKIPPED: no loopback device (BlackHole) found")
             return false
         }
-        machine.audio.forcedOutputDevice = device
-        machine.audio.forcedInputDevice = device
+        machine.audio.loopbackDevice = device
         return true
     }
 
@@ -454,6 +542,7 @@ enum SelfTest {
         await wait(0.4)
         await tap(.record, on: machine)
         await wait(4)
+        say("pass 1: \(describe(machine)); audio running=\(machine.audio.isRunning) restarts=\(machine.audio.restartCount) problem=\(machine.audio.problem ?? "none")")
         await tap(.stop, on: machine)
         machine.rhythm.running = false
         await wait(0.3)
@@ -484,14 +573,15 @@ enum SelfTest {
         panel.pan2 = 1
         panel.master = 0.75
         panel.recordR = .upper
-        panel.aux[0] = 0.8
-        panel.auxSend = 0.6
+        panel.aux[0] = 1
+        panel.auxSend = 0.8
         panel.monitor = .aux
-        panel.monitorLevel = 0.45
+        panel.monitorLevel = 0.8
         machine.panel = panel
         await wait(0.4)
         await tap(.record, on: machine)
         await wait(4)
+        say("pass 2: \(describe(machine))")
         await tap(.stop, on: machine)
         await wait(0.3)
 
@@ -501,14 +591,31 @@ enum SelfTest {
         let origin = Int(start - leader) + 48_000
         let count = 96_000
         let reach = 4000
-        let original = machine.debugReadTape(track: 0, from: origin, count: count)
-        let overdub = machine.debugReadTape(track: 1, from: origin - reach, count: count + 2 * reach)
+        var original = machine.debugReadTape(track: 0, from: origin, count: count)
+        var overdub = machine.debugReadTape(track: 1, from: origin - reach, count: count + 2 * reach)
         guard original.count == count, overdub.count == count + 2 * reach else { return say("FAIL: could not read the tape") }
         func energy(_ samples: [Float]) -> Float { samples.reduce(0) { $0 + $1 * $1 } }
-        say(String(format: "track 1 rms %.4f, track 2 rms %.4f", (energy(original) / Float(count)).squareRoot(), (energy(overdub) / Float(overdub.count)).squareRoot()))
-        // Drums repeat, so the correlation has several near-equal peaks one
-        // tone-period apart. The round trip is known to within a buffer or
-        // two, so look for the alignment only within ±5 ms.
+        let levels = ((energy(original) / Float(count)).squareRoot(), (energy(overdub) / Float(overdub.count)).squareRoot())
+        say(String(format: "track 1 rms %.4f, track 2 rms %.4f", levels.0, levels.1))
+        guard levels.0 > 0.01, levels.1 > 0.001 else {
+            return say("FAIL: nothing to compare; one of the two takes is not on the tape")
+        }
+        // The bass drum is a decaying tone: left in, it lines up nearly as
+        // well one of its periods early or late as it does dead on. Compare
+        // the tracks by their treble (the edges of the hits, the hi-hat),
+        // which only lines up one way.
+        func treble(_ samples: inout [Float]) {
+            var previous: Float = 0
+            for index in samples.indices {
+                let now = samples[index]
+                samples[index] = now - previous
+                previous = now
+            }
+        }
+        treble(&original)
+        treble(&overdub)
+        // The round trip is known to within a buffer or two, so the answer
+        // must lie within ±5 ms; it must also be the best match anywhere.
         let window = 240
         var scores: [(lag: Int, score: Float)] = []
         for lag in stride(from: -reach, through: reach, by: 1) {
@@ -522,11 +629,31 @@ enum SelfTest {
         }
         let best = scores.filter { abs($0.lag) <= window }.max { $0.score < $1.score } ?? (0, 0)
         let overall = scores.max { $0.score < $1.score } ?? (0, 0)
+        // The five strongest alignments anywhere in reach, as a share of the best.
+        var peaks: [(lag: Int, score: Float)] = []
+        for candidate in scores.sorted(by: { $0.score > $1.score }) where peaks.count < 5 {
+            if peaks.allSatisfy({ abs($0.lag - candidate.lag) > 150 }) { peaks.append(candidate) }
+        }
+        say("strongest alignments: " + peaks.map { String(format: "%+d (%.2f)", $0.lag, $0.score / max(overall.score, 1e-9)) }.joined(separator: ", "))
         if overall.lag != best.lag {
             say(String(format: "(a repeat of the pattern also matches at %+d frames, %.2f× as well)", overall.lag, overall.score / max(best.score, 1e-9)))
         }
+        // How alike the two tracks are at that alignment (1 = the same wave).
+        var cross: Float = 0, originalPower: Float = 0, overdubPower: Float = 0
+        for index in stride(from: 0, to: count, by: 3) {
+            let a = original[index], b = overdub[index + reach + best.lag]
+            cross += a * b
+            originalPower += a * a
+            overdubPower += b * b
+        }
+        let likeness = cross / max((originalPower * overdubPower).squareRoot(), 1e-12)
         let milliseconds = Double(best.lag) / CassetteStandard.sampleRate * 1000
-        say(String(format: "overdub sits %+d tape frames (%+.2f ms) from the track it was played to", best.lag, milliseconds))
+        say(String(format: "overdub sits %+d tape frames (%+.2f ms) from the track it was played to; likeness %.2f", best.lag, milliseconds, likeness))
+        // An alignment only means something if track 2 really is track 1
+        // come back round: one clear peak, and the same music.
+        guard overall.lag == best.lag, likeness > 0.5 else {
+            return say("FAIL: track 2 is not a copy of track 1, so this measured nothing (is the loop connected?)")
+        }
         say(abs(milliseconds) < 1.5 ? "PASS: overdubs line up" : "CHECK: more than 1.5 ms out; Head alignment in Settings can trim this")
     }
 
@@ -625,10 +752,23 @@ enum SelfTest {
         await idle(desk)
         say("ejected; loaded=\(machine.loaded?.title ?? "nil"); tape left at \(String(format: "%.1f", (machine.library.cassette(withID: scratch.id)?.position ?? 0) / CassetteStandard.sampleRate)) s")
 
-        // Put everything back as it was and bin the scratch tape.
-        if let scratch = machine.library.cassette(withID: scratch.id) {
-            machine.library.discard(scratch)
-        }
+        // A machine whose audio will not start says so, rather than sit there dead.
+        machine.notice = nil
+        machine.audio.debugReport(problem: "Audio would not start while testing.")
+        await wait(2.5)
+        say(machine.notice?.contains("Audio would not start while testing.") == true
+            ? "PASS: audio that will not start is explained in words"
+            : "FAIL: no word about the audio problem; notice=\(machine.notice ?? "nil")")
+        // …once: the same trouble coming back does not nag.
+        machine.notice = nil
+        machine.audio.debugReport(problem: nil)
+        await wait(0.3)
+        machine.audio.debugReport(problem: "Audio would not start while testing.")
+        await wait(2.5)
+        say(machine.notice == nil ? "PASS: and is not said twice" : "FAIL: the same notice came up again")
+        machine.notice = nil
+        machine.audio.debugReport(problem: nil)
+
         machine.panel = savedPanel
         machine.audio.patch = savedPatch
         machine.mechanicalLevel = savedLevel

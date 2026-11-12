@@ -22,26 +22,22 @@ struct X2026App: App {
             || environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
     }()
 
-    /// True when a debug build was launched just to render the icon.
-    private static var isRunningAnErrand: Bool {
-        #if DEBUG
-        IconArt.isRequested
-        #else
-        false
-        #endif
-    }
-
-    /// Errands and test runs must not change what the real machine remembers.
+    /// Errands and test runs must not see or change anything of the owner's.
+    /// Decided by the dashes rather than by a list of flags, so that a new
+    /// `--something-test` is kept off the real desk before anyone remembers
+    /// to add it here. (Xcode's own launch arguments have a single dash.)
     private static var leavesNoTrace: Bool {
         #if DEBUG
-        isHostingTests || isRunningAnErrand || SelfTest.isRequested || SelfTest.isLoopbackRequested || SelfTest.isTouchRequested || SelfTest.isMixdownRequested
+        isHostingTests || CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
         #else
         isHostingTests
         #endif
     }
 
     init() {
-        let machine = Machine(remembers: !Self.leavesNoTrace)
+        // Tests, previews and errands work at a desk of their own. They never
+        // see the owner's cassettes or settings, let alone record on them.
+        let machine = Self.leavesNoTrace ? Machine.onScratchDesk() : Machine()
         _machine = State(initialValue: machine)
         _desk = State(initialValue: Desk(machine: machine))
         if !Self.leavesNoTrace {
@@ -63,6 +59,10 @@ struct X2026App: App {
                         #endif
                         machine.powerOn()
                         #if DEBUG
+                        if SelfTest.isInputRequested {
+                            await SelfTest.runInput(machine: machine, desk: desk)
+                            NSApplication.shared.terminate(nil)
+                        }
                         if SelfTest.isMixdownRequested {
                             await SelfTest.runMixdown(machine: machine, desk: desk)
                             NSApplication.shared.terminate(nil)
@@ -89,6 +89,7 @@ struct X2026App: App {
                     }
                     .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                         machine.powerOff()
+                        machine.discardScratchDesk()
                     }
             }
         }
@@ -197,7 +198,6 @@ struct SettingsView: View {
     @Bindable var machine: Machine
 
     var body: some View {
-        @Bindable var audio = machine.audio
         Form {
             Section("Sound of the mechanism") {
                 Slider(value: $machine.mechanicalLevel, in: 0...1) {
@@ -209,18 +209,11 @@ struct SettingsView: View {
                 }
             }
             Section("Audio hardware") {
-                Picker("PHONES go to", selection: $audio.outputUID) {
-                    Text("System default").tag(String?.none)
-                    ForEach(AudioHardware.devices(input: false)) { device in
-                        Text(device.name).tag(String?.some(device.uid))
-                    }
-                }
-                Picker("Input jacks take from", selection: $audio.inputUID) {
-                    Text("System default").tag(String?.none)
-                    ForEach(AudioHardware.devices(input: true)) { device in
-                        Text(device.name).tag(String?.some(device.uid))
-                    }
-                }
+                LabeledContent("PHONES go to", value: machine.audio.outputDeviceName.isEmpty ? "—" : machine.audio.outputDeviceName)
+                LabeledContent("Input jacks take from", value: machine.audio.inputDeviceName.isEmpty ? "—" : machine.audio.inputDeviceName)
+                Text("The machine uses the output and input chosen in System Settings → Sound, and follows them when they change.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 LabeledContent("Sample rate", value: "\(Int(machine.audio.sampleRate)) Hz")
                 LabeledContent(
                     "Round trip",

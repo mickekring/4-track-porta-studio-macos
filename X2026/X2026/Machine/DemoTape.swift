@@ -246,32 +246,39 @@ nonisolated enum DemoTape {
         let key = "demoTape.made.v1"
         guard !UserDefaults.standard.bool(forKey: key), !recording else { return }
         recording = true
+        Task {
+            defer { recording = false }
+            do {
+                try await make(in: library)
+                // Only now is it true that the demo has been made.
+                UserDefaults.standard.set(true, forKey: key)
+            } catch {
+                Logger(subsystem: "se.mickekring.X2026", category: "demo").error("Could not record the demo tape: \(error)")
+            }
+        }
+    }
 
+    /// Records the demo onto a new cassette (off the main thread; it takes a
+    /// few seconds) and puts the cassette in the library.
+    @MainActor
+    @discardableResult
+    static func make(in library: TapeLibrary) async throws -> Cassette {
         var cassette = Cassette(title: title, stock: .c46, design: .studio)
         cassette.trackNotes = trackNotes
         cassette.recordProtected = true
         let url = library.oxideURL(for: cassette)
         let stock = cassette.stock
-        let finished = cassette
-        Task.detached(priority: .utility) {
-            let log = Logger(subsystem: "se.mickekring.X2026", category: "demo")
-            do {
+        do {
+            cassette.position = try await Task.detached(priority: .utility) {
                 try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                let position = try record(to: url, stock: stock)
-                await MainActor.run {
-                    var ready = finished
-                    ready.position = position
-                    library.add(ready)
-                    // Only now is it true that the demo has been made.
-                    UserDefaults.standard.set(true, forKey: key)
-                    recording = false
-                }
-            } catch {
-                log.error("Could not record the demo tape: \(error)")
-                try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
-                await MainActor.run { recording = false }
-            }
+                return try record(to: url, stock: stock)
+            }.value
+        } catch {
+            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+            throw error
         }
+        library.add(cassette)
+        return cassette
     }
 
     @MainActor private static var recording = false

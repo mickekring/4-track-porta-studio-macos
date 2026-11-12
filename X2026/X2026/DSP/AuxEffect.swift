@@ -113,6 +113,28 @@ nonisolated struct AuxEffect {
         preDelay = nil
     }
 
+    /// Empties every delay line. Allocation-free.
+    mutating func clear() {
+        if let combs {
+            for index in 0..<(Self.combCount * 2) {
+                combs[index].buffer.update(repeating: 0, count: combs[index].length)
+                combs[index].memory = 0
+            }
+        }
+        if let allpasses {
+            for index in 0..<(Self.allpassCount * 2) {
+                allpasses[index].buffer.update(repeating: 0, count: allpasses[index].length)
+            }
+        }
+        echo?.update(repeating: 0, count: echoLength)
+        preDelay?.update(repeating: 0, count: preDelayLength)
+        lowCut = DCBlocker()
+        lowCut.setCutoff(140, sampleRate: sampleRate)
+        topL.value = 0
+        topR.value = 0
+        echoTone.value = 0
+    }
+
     /// Takes new knob positions. Cheap enough for the top of every block.
     mutating func apply(_ settings: Settings) {
         connected = settings.connected

@@ -250,6 +250,38 @@ nonisolated struct MachineDSP {
         }
     }
 
+    /// Clears every filter and delay in the signal path.
+    private mutating func blowFuse() {
+        previousLineL = 0
+        previousLineR = 0
+        highL.reset()
+        lowL.reset()
+        highR.reset()
+        lowR.reset()
+        recordHighL.reset()
+        recordLowL.reset()
+        recordHighR.reset()
+        recordLowR.reset()
+        couplingL = DCBlocker()
+        couplingR = DCBlocker()
+        couplingL.setCutoff(6, sampleRate: sampleRate)
+        couplingR.setCutoff(6, sampleRate: sampleRate)
+        meters = Quad(repeating: 0)
+        for index in 0..<Self.historySize {
+            tapeBussL[index] = 0
+            tapeBussR[index] = 0
+        }
+        for track in 0..<Self.trackCount {
+            channels[track] = TapeChannel(seed: UInt32(track + 1))
+            channels[track].configure(sampleRate: sampleRate)
+            heads[track] = RecordHead()
+            heads[track].leak.setCutoff(3000, sampleRate: sampleRate)
+            trackOut[track] = 0
+            leak[track] = 0
+        }
+        effect.clear()
+    }
+
     mutating func trigger(_ sound: MechanicalSound) {
         mechanics.trigger(sound)
     }
@@ -574,6 +606,15 @@ nonisolated struct MachineDSP {
             }
 
             clock &+= 1
+        }
+
+        // A fuse. Nothing above should ever produce a non-number, but if it
+        // did it would circulate in the filters for ever: clear them instead.
+        if !(previousLineL.isFinite && previousLineR.isFinite && left[frames - 1].isFinite && right[frames - 1].isFinite) {
+            blowFuse()
+            left.update(repeating: 0, count: frames)
+            right.update(repeating: 0, count: frames)
+            lineOut.update(repeating: 0, count: 2 * Self.maximumFrames)
         }
 
         mechanics.render(

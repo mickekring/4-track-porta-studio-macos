@@ -552,6 +552,41 @@ struct SoundTests {
         #expect(peak > 0.5)
     }
 
+    @Test("An armed track routed back to its own buss howls, but stays finite and within the rails")
+    func feedbackIsBounded() throws {
+        let rig = try Rig()
+        rig.controls.panel = Panel()
+        // The loop the manual warns about: track 1 armed, SUB GAIN 3 towards
+        // TRK 1, REMIX on, panned to the side that feeds track 1, everything up.
+        rig.controls.panel.recordL = .upper
+        rig.controls.panel.subGain[0] = 1
+        rig.controls.panel.subPan[0] = 0
+        rig.controls.panel.remix = true
+        rig.controls.panel.master = 1
+        rig.controls.panel.eqHighL = 1
+        rig.controls.panel.eqLowL = 1
+        rig.controls.panel.fader1 = 0.75
+        rig.controls.panel.pan1 = 0
+        rig.controls.panel.monitor = .lineAndSubMix
+        rig.controls.panel.monitorLevel = 1
+        var loudest: Float = 0
+        for transport in [TransportRequest(), TransportRequest(motion: .play, recordKey: true), TransportRequest()] {
+            rig.controls.transport = transport
+            let out = rig.run(seconds: 1.5, signal: sine(700, amplitude: 0.05)).left
+            #expect(out.allSatisfy { $0.isFinite })
+            loudest = max(loudest, out.map(abs).max() ?? 0)
+        }
+        // The headphone amp runs out of volts at full scale (give or take a rounding error).
+        #expect(loudest <= 1.0001)
+        // And it recovers once the loop is broken.
+        rig.controls.panel.subGain[0] = 0.5
+        rig.controls.panel.recordL = .off
+        rig.run(seconds: 0.5)
+        let after = rig.run(seconds: 0.5).left
+        #expect(after.allSatisfy { $0.isFinite })
+        #expect(rms(after) < 0.01)
+    }
+
     @Test("The core runs comfortably faster than real time")
     func performance() throws {
         let rig = try Rig()

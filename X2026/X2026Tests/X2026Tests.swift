@@ -1234,6 +1234,41 @@ struct DemoTapeTests {
     }
 }
 
+@Suite("Dubbing")
+struct TapeDubTests {
+    @Test("The two passes of a dub land on the tape in step: the same sound sent to tracks 1 and 3 is the same on both")
+    func passesShareOneTimeBase() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "x2026-dub-\(UUID().uuidString).pcm")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let stock = TapeStock.c46
+        let medium = try TapeMedium(url: url, frameCount: stock.frameCount)
+        let start = stock.leaderLength * CassetteStandard.framesPerMeter + 0.5 * CassetteStandard.sampleRate
+
+        // Six seconds of clicks and a gliding tone: anything out of step shows.
+        let frames = 6 * 48_000
+        TapeDub.record(onto: medium, stock: stock, from: start, frames: frames, noiseReduction: false) { _, frame, count, first, second in
+            for index in 0..<count {
+                let now = frame + index
+                let time = Double(now) / 48_000
+                let click: Float = now % 12_000 < 24 ? 0.5 : 0
+                first[index] = click + 0.2 * Float(sin(2 * Double.pi * (300 + 150 * time) * time))
+                second[index] = 0
+            }
+        }
+
+        let origin = Int(start - stock.leaderLength * CassetteStandard.framesPerMeter)
+        // Past the capstan's run-in, well inside the take.
+        let window = (origin + 48_000)..<(origin + 5 * 48_000)
+        let one = window.map { medium.read(track: 0, frame: $0) }
+        let three = window.map { medium.read(track: 2, frame: $0) }
+        #expect(rms(one) > 0.05, "nothing was recorded")
+        let apart = zip(one, three).map { abs($0 - $1) }.max() ?? 1
+        #expect(apart < 0.002, "tracks 1 and 3 differ by up to \(apart)")
+        // Track 2 and 4 heard silence.
+        #expect(rms(window.map { medium.read(track: 1, frame: $0) }) < 0.002)
+    }
+}
+
 // MARK: - Mechanical sounds
 
 @Suite("Mechanical sounds")

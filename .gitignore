@@ -7,3 +7,13 @@ xcuserdata/
 DerivedData/
 build/
 *.xcresult
+
+# Music handed over to be dubbed onto a cassette is the owner's, not the
+# project's: it never goes into the repository.
+*.zip
+*.mp3
+*.wav
+*.aif
+*.aiff
+*.flac
+*.m4a

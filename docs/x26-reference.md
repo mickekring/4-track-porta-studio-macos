@@ -158,6 +158,8 @@ X2026/X2026/
   not a nicety: before it existed, a test recorded on the owner's cassette.
   Any launch argument starting with `--` puts a debug build on a scratch
   desk (`leavesNoTrace` in `X2026App`), so a new flag is isolated by default.
+  Their window does not save its position either (AppKit would write it
+  into the owner's settings as if it were theirs).
 - End-to-end run of the real app (debug builds): launch the built binary with
   `--self-test`. It inserts a scratch tape by hand, records the rhythm box,
   rewinds by counter, plays back, fast-forwards to the end and ejects,
@@ -183,3 +185,66 @@ X2026/X2026/
 - Re-render the app icon: launch a debug build with `--render-icon <folder>`
   (inside the app's container) and copy the PNGs into `AppIcon.appiconset`.
 - Cassettes live in the app's container under `Application Support/Tapes`.
+
+## Dubbing a cassette from stems
+
+To put finished music on a cassette (a song's stems, say) without playing it
+in by hand:
+
+```
+./scripts/dub-tape.sh <folder> [<folder to keep the proof in>]
+```
+
+`<folder>` holds the audio files (48 kHz; anything macOS can read) and an
+`order.json`:
+
+```json
+{
+  "title": "What to write on the label",
+  "design": "krom",
+  "minutes": 46,
+  "noiseReduction": true,
+  "recordProtected": true,
+  "gain": 0,
+  "tracks": [
+    { "note": "Vocals", "files": ["lead.mp3", "backing.mp3"] },
+    { "note": "Drums and bass", "files": ["drums.mp3", "bass.mp3"] },
+    { "note": "Guitars", "files": ["guitar.mp3"] },
+    { "note": "Keys", "files": ["keys.mp3"] }
+  ]
+}
+```
+
+What happens (`Machine/TapeDub.swift`):
+
+- Each track's files are folded to mono, (L+R)/2, and summed. Nothing is
+  normalised. `gain` is one figure in dB for all four tracks, so they keep
+  the balance they have in the files; at 0, digital full scale lands 12 dB
+  over the meters' 0 mark, which puts an ordinary mix about where a
+  recordist would.
+- A second X-2026 behind the scenes records them the way the machine does:
+  INPUT 1 and 2, faders at their 0 mark, panned hard left and right, onto
+  tracks 1 and 2; then again onto tracks 3 and 4. Same record path, noise
+  reduction, saturation and hiss as at the desk. This is also how the
+  built-in demo is made.
+- Each pass runs on a machine switched on fresh, so wow and flutter take the
+  same course both times and the two pairs of tracks are in step to the
+  sample. (Recorded on one machine carried over from pass to pass they
+  drifted up to 10 ms apart: a dub is fed by the clock, with nobody playing
+  along to the tape.)
+- The tape is left at the start, one second before the music.
+- Proof, if asked for: `in N.wav` is what went into the jack for track N,
+  `out N.wav` the track played back alone (SUB GAIN full, SUB PAN centre),
+  `mix.wav` all four with the factory panel.
+
+The errand itself is `X2026 --dub-tape <folder>` (any build). It runs before
+there is a machine or a window, works only inside the folder it is given
+(which must be inside the app's container; the script sees to that), and
+quits. The script then moves the finished cassette into the library, and
+that is the only thing it touches there. A running X-2026 sees the new
+cassette the next time it starts.
+
+Play such a tape with the NR switch where `noiseReduction` says. SUB GAIN is
+at unity with the knob at three o'clock (0.8); with all four there and SUB
+PAN to taste, the mix is the one in the files.
+

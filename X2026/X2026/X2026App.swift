@@ -35,6 +35,9 @@ struct X2026App: App {
     }
 
     init() {
+        // An errand that needs neither machine nor window is done, and the
+        // app gone again, before either exists.
+        TapeDub.runErrandIfAsked()
         // Tests, previews and errands work at a desk of their own. They never
         // see the owner's cassettes or settings, let alone record on them.
         let machine = Self.leavesNoTrace ? Machine.onScratchDesk() : Machine()
@@ -54,6 +57,11 @@ struct X2026App: App {
                 DeskView(desk: desk)
                     .frame(minWidth: 906, minHeight: 546)
                     .task {
+                        if Self.leavesNoTrace {
+                            // AppKit would remember where this window was last
+                            // put, in the owner's settings, as if it were theirs.
+                            for window in NSApplication.shared.windows { window.setFrameAutosaveName("") }
+                        }
                         #if DEBUG
                         let loopback = SelfTest.isLoopbackRequested && SelfTest.prepareLoopback(machine: machine)
                         #endif

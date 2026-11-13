@@ -130,6 +130,44 @@ moment the AirPods disconnected from the Mac. Not seen in six further runs,
 and not reproduced by forcing an audio restart in the middle of a drag (which
 is now a check in that test). Cause unknown; possibly the real pointer.
 
+## Round 4 — Micke's own song on a cassette (2026-11-13)
+
+Asked for: a demo tape of "Sometimes When I See You Smile" from its nine
+stems. Track 1 all vocals; 2 bass, drums, percussion; 3 guitars; 4 keyboards
+and other. Levels as they sit in the original mix: nothing normalised.
+
+- [x] Measure the stems (all 48 kHz stereo, 4:39.5, aligned).
+- [x] `TapeDub`: the two-passes-of-two-tracks recording that makes the
+      built-in demo, lifted out so it can record anything. Checked
+      bit-for-bit against the demo as it was before the move.
+- [x] Errand `--dub-tape <folder>`: reads `order.json`, sums each track's
+      stems to mono ((L+R)/2), applies ONE gain to all four (0 dB here),
+      records them through the machine, writes a cassette package.
+- [x] Prove it: each track played back through the machine against what
+      went in, and the factory mix against the stems mixed the same way.
+- [x] Found by that proof: tracks 3 and 4 wandered up to 10 ms against 1 and
+      2 (the second pass had its own wow and flutter). Each pass now runs on
+      a fresh machine; unit test that fails on the old recorder. The demo
+      had the same fault and is cured with it (new copies only).
+- [x] Found by the fingerprint: the errand's window, moved aside, was saved
+      into Micke's settings. The errand is now headless and runs in any
+      build (20 s instead of 17 min); test windows do not save their place.
+- [x] `scripts/dub-tape.sh`; cassette on Micke's desk (one new folder,
+      nothing else changed; bit-for-bit the copy that was verified).
+- [x] Docs, lessons 20–22, commit (stems kept out of git), install.
+
+Result for "Sometimes When I See You Smile" (KROM C-46, NR on, tabs out):
+
+| | lag vs input | likeness | level vs track 2 |
+|---|---|---|---|
+| Track 1, vocals | +2 frames, steady | 0.99 | −0.35 dB |
+| Track 2, drums, bass, percussion | +2 frames by its treble | 0.92 treble (0.71 full band: bass phase turned by the tape path) | 0 |
+| Track 3, guitars | +2 frames, steady | 0.97 | +0.10 dB |
+| Track 4, keys, synth, other | +1 frame | 0.83 (it is 20 dB quieter; hiss) | +0.21 dB |
+
+Loud moments come back 0.4–0.8 dB down and the very highest sample peaks
+are rounded off by up to 6 dB: tape. Not checked: by ear.
+
 ## Not done / ideas
 
 - [x] Choose input and output devices in Settings

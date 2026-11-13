@@ -151,8 +151,6 @@ nonisolated enum DemoTape {
     /// Records the demo onto the oxide file at `url` and returns the tape
     /// position (in frames) to leave the cassette at. Takes a few seconds.
     static func record(to url: URL, stock: TapeStock) throws -> Double {
-        let core = MachineCore()
-        core.prepare(sampleRate: sampleRate)
         let medium = try TapeMedium(url: url, frameCount: stock.frameCount)
         let leader = stock.leaderLength * CassetteStandard.framesPerMeter
         let start = leader + 0.5 * CassetteStandard.sampleRate
@@ -163,75 +161,37 @@ nonisolated enum DemoTape {
         let piano = Piano()
         var lead = Lead()
 
-        // Blocks of 10 ms, so the count-in starts exactly on a block boundary
-        // and the rhythm box comes in dead on the beat.
-        let block = 480
-        let left = UnsafeMutablePointer<Float>.allocate(capacity: block)
-        let right = UnsafeMutablePointer<Float>.allocate(capacity: block)
-        defer {
-            left.deallocate()
-            right.deallocate()
-        }
         let songLength = Double(bars) * bar + 3
         let quiet = leadIn - 0.5
+        var drumsRunning = false
 
-        for pass in 0..<2 {
-            core.insert(medium: medium, stock: stock, position: start, recordProtected: false)
-
-            var controls = ControlFrame()
-            controls.mechanicalLevel = 0
-            controls.panel = Panel()
-            controls.panel.fader1 = 0.75
-            controls.panel.fader2 = 0.75
-            controls.panel.pan1 = 0
-            controls.panel.pan2 = 1
-            controls.panel.master = 0.75
-            controls.panel.recordL = pass == 0 ? .upper : .lower
-            controls.panel.recordR = pass == 0 ? .upper : .lower
-            controls.transport = TransportRequest(motion: .play, recordKey: true)
-            core.controls.post(controls)
-
-            var frame = 0
-            let total = Int((quiet + songLength) * sampleRate)
-            var drumsRunning = false
-            while frame < total {
-                let frames = min(block, total - frame)
-                let time = Double(frame) / sampleRate - quiet
-                // The rhythm box is started by hand on the downbeat and stopped at the end.
-                let shouldRun = time >= 0 && time < Double(bars - 1) * bar
-                if shouldRun != drumsRunning {
-                    drumsRunning = shouldRun
-                    drums.settings.post(RhythmBox.Settings(running: shouldRun, tempo: tempo, pattern: 0, volume: 0.82))
-                } else if drumsRunning && time >= 10 * bar && time < 10 * bar + 0.02 {
-                    drums.settings.post(RhythmBox.Settings(running: true, tempo: tempo, pattern: 1, volume: 0.82))
-                }
-
-                let first = core.jacks
-                let second = core.jacks + MachineCore.maximumFrames
-                for jack in 2..<MachineDSP.jackCount {
-                    (core.jacks + jack * MachineCore.maximumFrames).update(repeating: 0, count: frames)
-                }
-                if pass == 0 {
-                    drums.render(into: first, frames: frames)
-                    for index in 0..<frames {
-                        let now = Double(frame + index) / sampleRate - quiet
-                        second[index] = now >= 0 ? bass.sample(at: now) : 0
-                    }
-                } else {
-                    for index in 0..<frames {
-                        let now = Double(frame + index) / sampleRate - quiet
-                        first[index] = now >= 0 ? piano.sample(at: now) : 0
-                        second[index] = now >= 0 ? lead.sample(at: now) : 0
-                    }
-                }
-                core.render(frames: frames, left: left, right: right)
-                frame += frames
+        // The machine turns in blocks of 10 ms, so the count-in starts exactly
+        // on a block boundary and the rhythm box comes in dead on the beat.
+        TapeDub.record(onto: medium, stock: stock, from: start, frames: Int((quiet + songLength) * sampleRate)) { pass, frame, frames, first, second in
+            if frame == 0 { drumsRunning = false }
+            let time = Double(frame) / sampleRate - quiet
+            // The rhythm box is started by hand on the downbeat and stopped at the end.
+            let shouldRun = time >= 0 && time < Double(bars - 1) * bar
+            if shouldRun != drumsRunning {
+                drumsRunning = shouldRun
+                drums.settings.post(RhythmBox.Settings(running: shouldRun, tempo: tempo, pattern: 0, volume: 0.82))
+            } else if drumsRunning && time >= 10 * bar && time < 10 * bar + 0.02 {
+                drums.settings.post(RhythmBox.Settings(running: true, tempo: tempo, pattern: 1, volume: 0.82))
             }
 
-            controls.transport = TransportRequest()
-            core.controls.post(controls)
-            core.render(frames: block, left: left, right: right)
-            core.eject()
+            if pass == 0 {
+                drums.render(into: first, frames: frames)
+                for index in 0..<frames {
+                    let now = Double(frame + index) / sampleRate - quiet
+                    second[index] = now >= 0 ? bass.sample(at: now) : 0
+                }
+            } else {
+                for index in 0..<frames {
+                    let now = Double(frame + index) / sampleRate - quiet
+                    first[index] = now >= 0 ? piano.sample(at: now) : 0
+                    second[index] = now >= 0 ? lead.sample(at: now) : 0
+                }
+            }
         }
         medium.flush(wait: true)
         return start

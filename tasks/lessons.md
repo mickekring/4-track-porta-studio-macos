@@ -148,3 +148,32 @@ differed. Anything he had played himself would have been gone.)
     failed to start once was never tried again, under a notice that said it
     would be) and a refusal of the microphone that nothing reported.
 
+## 2026-11-13 — Micke's song on a cassette
+
+**What was asked:** a tape of his song from nine stems, on four tracks. While
+I was still weighing how to set each track's level he wrote: "they should be
+audio wise in levels as they sit in the original mix, so don't normalize
+them or anything".
+
+### Rules
+
+20. **His audio goes on tape as it is.** One gain for everything if a gain is
+    needed at all; no per-track levelling, no clever fold-downs, no
+    "improvements". If something about the material will not survive the
+    trip (a stem that is partly out of phase in mono, say), tell him and let
+    him choose. The measuring is mine to do; the mixing is his.
+
+21. **Check the relations between the parts, not only each part.** Every
+    track came back at the right level and looked fine alone. Only comparing
+    their timing against each other showed that tracks 3 and 4 wandered up
+    to 10 ms from 1 and 2, because the second pass ran on a different
+    stretch of wow and flutter. The built-in demo had had the same fault
+    since the first day; nobody had measured it.
+
+22. **An errand shows nothing and remembers nothing.** The first run of the
+    dubbing errand put a window on Micke's screen for a quarter of an hour;
+    he moved it aside, and AppKit saved that position into his settings. An
+    errand now runs before there is a window at all, and test windows no
+    longer save where they are. The fingerprint (rule 17) caught it, which is
+    what it is for; it now covers the settings key by key.
+
